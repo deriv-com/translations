@@ -12,7 +12,7 @@ const i18n_config = {
     },
     useSuspense: true,
   },
-  debug: true,
+  debug: false,
   initImmediate: true,
   fallbackLng: "en",
   interpolation: {

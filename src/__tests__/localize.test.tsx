@@ -1,11 +1,20 @@
-import { describe, expect, test } from "vitest";
+import { render } from "@testing-library/react";
+import { TranslationProvider } from "@provider/index";
+import { initializeI18n } from "@utils/index";
 import { Localize } from "@components/index";
-import { render, screen } from "@/utils/test-utils";
+
+const i18nInstance = initializeI18n({ cdnUrl: "https://localhost:3000" });
 
 describe("Localize component", () => {
-  test("test string must be rendered", () => {
-    render(<Localize i18n_default_text="test" />);
+  test("test string must be rendered", async () => {
+    const { findByText } = render(<Localize i18n_default_text="test" />, {
+      wrapper: ({ children }) => (
+        <TranslationProvider defaultLang="EN" i18nInstance={i18nInstance}>
+          {children}
+        </TranslationProvider>
+      ),
+    });
 
-    expect(screen.getByText("test")).toBeTruthy();
+    expect(await findByText("test")).toBeTruthy();
   });
 });
