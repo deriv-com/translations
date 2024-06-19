@@ -9,7 +9,11 @@ type TInstanceConfig = {
   enableDebug?: InitOptions["debug"];
 };
 
-const setI18Config = ({ useSuspense, enableDebug }: TInstanceConfig) => ({
+const setI18Config = ({
+  useSuspense,
+  enableDebug,
+}: TInstanceConfig): InitOptions => ({
+  load: "languageOnly",
   react: {
     hashTransKey(defaultValue: string) {
       return crc32(defaultValue);

@@ -17,7 +17,9 @@ export default class OtaI18next implements OtaI18nextModule {
   }
 
   read(language: string, _namespace: string, callback: ReadCallback) {
-    fetch(this.cdnUrl + "/translations/" + language.toLowerCase() + ".json")
+    fetch(`${this.cdnUrl}/translations/${language.toLowerCase()}.json`, {
+      cache: "no-cache",
+    })
       .then((res) => {
         if (!res.ok) {
           throw new Error("Failed to fetch translations");
