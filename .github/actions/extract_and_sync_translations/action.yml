@@ -88,5 +88,5 @@ runs:
         r2-access-key-id: ${{ inputs.R2_ACCESS_KEY_ID }}
         r2-secret-access-key: ${{ inputs.R2_SECRET_ACCESS_KEY }}
         r2-bucket: ${{ inputs.R2_BUCKET_NAME }}
-        source-dir: ./translations
+        source-dir: translations
         destination-dir: ./${{ inputs.PROJECT_NAME }}/${{ inputs.CROWDIN_BRANCH_NAME }}/translations
