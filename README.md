@@ -10,7 +10,7 @@ This is a localization library that uses `i18next`, `react-i18next`, and a custo
 - [Usage](#usage)
     - [`initializeI18n`](#initializei18n)
     - [`<Localize />`](#localize-component-example)
-    - [~~`localize`~~](#localize-example)
+    - [`localize`](#localize-example)
     - [`useTranslations` Hook](#usetranslations-hook)
 - [Syncing translations to CDN](#syncing-translations)
     - [Example usage of the action in the workflow file](#example-usage-of-the-action-in-the-workflow-file)
@@ -100,16 +100,16 @@ import { Localize } from "@deriv-com/translations";
 />;
 ```
 
-### ~~`localize`~~ example:
+### `localize` example:
 
-> Note that the `localize` function is deprecated and should be replaced with the `useTranslations` hook or the `Localize` component. this function will not get the update from i18n instance once there is any changes like resource loaded or language change. the example of the `localize` function is provided for backward compatibility.
+> Note that the `localize` function will not get the update from i18n instance once there is any changes like resource loaded or language change. This `localize` function is not to be used to wrap strings in components and only suitable for util/mapper functions which would not cause issues with string not getting updated.
 
 ```jsx
 import { localize } from "@deriv-com/translations";
 
-<h4 className="drawer__notifications-header">
-  {localize("all notifications")}
-</h4>;
+const getNotification = () => ({
+  all: localize("all notifications"),
+});
 ```
 
 ### `useTranslations` Hook

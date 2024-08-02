@@ -87,7 +87,7 @@ export default function Playground({
 
           <div className="translations-playground-card translations-playground-bg-skyblue">
             <h1>
-              Deprecated <code>localize</code> function
+              <code>localize</code> function
             </h1>
             <div>{localize("Reports")}</div>
           </div>
