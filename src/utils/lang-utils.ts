@@ -5,11 +5,11 @@ type LanguageCode = keyof typeof constants.ALL_LANGUAGES;
 export const getInitialLanguage = () => {
   const url_params = new URLSearchParams(window.location.search);
   const query_lang = url_params.get("lang");
-  const local_storage_language = localStorage.getItem(constants.LANGUAGE_KEY);
+  const local_storage_language = JSON.parse(localStorage.getItem(constants.LANGUAGE_KEY) as string);
 
   if (query_lang) {
     const query_lang_uppercase = query_lang.toUpperCase();
-    localStorage.setItem(constants.LANGUAGE_KEY, query_lang_uppercase);
+    localStorage.setItem(constants.LANGUAGE_KEY, JSON.stringify(query_lang_uppercase));
     return query_lang_uppercase;
   }
 
