@@ -24,9 +24,8 @@ export default function TranslationProvider({
 
   const switchLanguage = (lang: string) => {
     i18nInstance.changeLanguage(lang);
-
     setCurrentLanguage(lang);
-    localStorage.setItem(constants.LANGUAGE_KEY, lang);
+    localStorage.setItem(constants.LANGUAGE_KEY, JSON.stringify(lang));
   };
 
   useEffect(() => {
