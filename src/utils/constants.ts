@@ -18,6 +18,7 @@ export const ALL_LANGUAGES = Object.freeze({
   SI: "සිංහල",
   TH: "ไทย",
   TR: "Türkçe",
+  UZ: "O'zbek",
   VI: "Tiếng Việt",
   ZH_CN: "简体中文",
   ZH_TW: "繁體中文",
