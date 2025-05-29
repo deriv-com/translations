@@ -53,14 +53,14 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      run: npm i @deriv-com/translations@latest
+      run: npm i @deriv-com/translations@latest --legacy-peer-deps
 
     - name: Run extract script
       shell: bash
       env:
         PROJECT_SOURCE_DIRECTORY: ${{ inputs.PROJECT_SOURCE_DIRECTORY }}
       run: npx deriv-extract-translations $PROJECT_SOURCE_DIRECTORY --verbose
-    
+
     - name: Setup crowdin config
       shell: bash
       run: |
