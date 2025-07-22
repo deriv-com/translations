@@ -46,9 +46,9 @@
     "react-i18next": "^14.0.1",
     "semantic-release": "^23.0.6",
     "typescript": "^5.2.2",
-    "vite": "^5.0.8",
-    "vite-plugin-dts": "^3.7.3",
-    "vitest": "^1.6.1"
+    "vite": "^7.0.5",
+    "vite-plugin-dts": "^4.5.4",
+    "vitest": "^3.2.4"
   },
   "optionalDependencies": {
     "@rollup/rollup-linux-x64-gnu": "^4.17.1"
