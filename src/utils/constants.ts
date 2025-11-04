@@ -9,6 +9,7 @@ export const ALL_LANGUAGES = Object.freeze({
   ID: "Indonesian",
   IT: "Italiano",
   SW: "Kiswahili",
+  TA: "தமிழ்",
   KM: "ខ្មែរ",
   KO: "한국어",
   MN: "Монгол",

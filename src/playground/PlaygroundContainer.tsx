@@ -13,6 +13,7 @@ const languages = [
   "FR",
   "ID",
   "IT",
+  "TA",
   "KO",
   "PL",
   "PT",
