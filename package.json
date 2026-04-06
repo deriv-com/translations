@@ -46,7 +46,7 @@
     "react-i18next": "^14.0.1",
     "semantic-release": "^25.0.2",
     "typescript": "^5.2.2",
-    "vite": "^7.0.5",
+    "vite": "^7.3.2",
     "vite-plugin-dts": "^4.5.4",
     "vitest": "^3.2.4"
   },
