@@ -1,10 +1,11 @@
 import type { i18n } from "i18next";
+import React from "react";
 import { Trans, withTranslation } from "react-i18next";
 
 type TLocalizeProps = {
   i18n_default_text: string;
   values?: object;
-  components?: JSX.Element[];
+  components?: React.JSX.Element[];
   options?: Record<string, unknown>;
   shouldUnescape?: boolean;
   i18n?: i18n;
