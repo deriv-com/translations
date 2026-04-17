@@ -1,10 +1,11 @@
-/// <reference types="vitest" />
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
-import { resolve, relative, extname } from "path";
+import { defineConfig } from "vitest/config";
+import { resolve, relative, extname, dirname } from "path";
 import { fileURLToPath } from "node:url";
 import dts from "vite-plugin-dts";
 import { glob } from "glob";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -15,13 +16,11 @@ export default defineConfig({
       formats: ["es"],
     },
     rollupOptions: {
-      external: ["react", "react-dom", "react-dom/client"],
+      external: ["react", "react-dom", "react-dom/client", "react-i18next", "i18next"],
       output: {
-        assetFileNames: "assets/[name]",
+        assetFileNames: "assets/[name][extname]",
         entryFileNames: "[name].js",
-        globals: {
-          react: "React",
-        },
+        chunkFileNames: "[name]-[hash].js",
       },
       input: Object.fromEntries(
         glob
@@ -65,6 +64,9 @@ export default defineConfig({
         "setupTests.ts",
         "src/**/*.test.tsx",
         "src/**/*.test.ts",
+        "src/**/*.spec.tsx",
+        "src/**/*.spec.ts",
+        "src/**/__tests__/**",
         "src/playground/*.tsx",
         "src/playground/*.ts",
         "src/playground/*.css",

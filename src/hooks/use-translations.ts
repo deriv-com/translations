@@ -1,3 +1,5 @@
+"use client";
+
 import { useTranslation } from "react-i18next";
 import { useContext } from "react";
 import { TranslationContext } from "@/provider/index";
