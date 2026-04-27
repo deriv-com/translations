@@ -1,3 +1,5 @@
+"use client";
+
 import type { i18n } from "i18next";
 import React from "react";
 import { Trans, withTranslation } from "react-i18next";
