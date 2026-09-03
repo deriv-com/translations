@@ -13,7 +13,7 @@ export const ALL_LANGUAGES = Object.freeze({
   KM: "ខ្មែរ",
   KO: "한국어",
   MN: "Монгол",
-  PL: "Polish",
+  PL: "Polski",
   PT: "Português",
   RU: "Русский",
   SI: "සිංහල",
