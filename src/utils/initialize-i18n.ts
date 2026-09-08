@@ -19,6 +19,7 @@ const setI18Config = ({ useSuspense, enableDebug }: TInstanceConfig) => ({
   debug: enableDebug,
   initImmediate: true,
   fallbackLng: "EN",
+  load: "currentOnly" as const,
   interpolation: {
     escapeValue: false,
   },

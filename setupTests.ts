@@ -10,6 +10,9 @@ const mockTranslationValues = {
   "/translations/ko.json": {
     "-662733300": "ko test",
   },
+  "/translations/zh_cn.json": {
+    "-662733300": "zh-cn test",
+  },
 } as const;
 
 // @ts-expect-error - fetch is a global function
