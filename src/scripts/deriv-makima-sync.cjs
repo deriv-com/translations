@@ -29,6 +29,8 @@
  *   PROTECTED_TERMS_FILE (optional JSON array of strings), TRANSLATIONS_DIR
  *   (default ./translations), REFERENCE (default "<project>/<env>/<GITHUB_SHA>").
  *
+ * The API key is read from the environment and never written to any log.
+ *
  * Exit code: non-zero only for hard failures (bad configuration, auth, the job
  * failing outright, a timeout). A `partial` job writes the locales that
  * succeeded and reports `status=partial` through $GITHUB_OUTPUT so the action
@@ -37,7 +39,6 @@
 
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
 
 /** Locale code → Makima language name, from the Makima API guide (39 languages). */
 const LANGUAGES = [
@@ -241,10 +242,6 @@ function mergeLocale({ en, plan, translated, tokensByKey }) {
 const DEFAULT_BASE = "https://pedro-api-dev.deriv.ai";
 /** Keep each job well under Makima's 1,500,000-byte transport limit. */
 const MAX_CHUNK_BYTES = 400 * 1024;
-
-function fingerprint(secret) {
-  return crypto.createHash("sha256").update(String(secret)).digest("hex").slice(0, 12);
-}
 
 /** Split a key → text map into chunks that each serialise under the limit. */
 function chunkContent(content, maxBytes = MAX_CHUNK_BYTES) {
@@ -474,7 +471,9 @@ async function main(env = process.env, io = {}) {
   const log = io.log || ((m) => console.log(m));
   const cfg = readEnv(env);
 
-  log(`Makima sync for ${cfg.project}/${cfg.environment} → ${cfg.locales.join(", ")} (key fingerprint ${fingerprint(cfg.apiKey)}${cfg.dryRun ? ", dry run" : ""})`);
+  // The API key is never logged, not even derived from: the gateway records its
+  // own per-caller fingerprint, which is enough to attribute a call.
+  log(`Makima sync for ${cfg.project}/${cfg.environment} → ${cfg.locales.join(", ")}${cfg.dryRun ? " (dry run)" : ""}`);
 
   const enPath = path.join(cfg.translationsDir, "en.json");
   if (!fs.existsSync(enPath)) throw new Error(`${enPath} not found — run deriv-extract-translations first`);
