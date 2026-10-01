@@ -184,6 +184,88 @@ jobs:
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 ```
 
+## Syncing translations with Makima
+
+Crowdin is being decommissioned in favour of the internal Makima translation
+gateway. `extract_and_sync_translations_makima` is a drop-in sibling of the
+Crowdin action: it runs the same extractor and uploads the same
+`translations/<locale>.json` files to the same R2 folder, so the runtime needs
+no change. Only the middle step differs — new strings are translated by Makima
+instead of downloaded from Crowdin.
+
+How it keeps translations stable:
+
+- **Delta only.** The current `<locale>.json` is fetched from the CDN first and
+  used as the translation memory. Keys already there are kept verbatim, keys no
+  longer in `en.json` are pruned, and only missing keys are sent to Makima.
+  Because keys are the crc32 of the English text, a reworded string is a new key.
+- **Protected tokens.** `{{placeholders}}`, `<0>…</0>` component markers and any
+  terms listed in `PROTECTED_TERMS_FILE` (brand and product names) are swapped
+  for HTML tokens Makima preserves, restored afterwards, and verified to appear
+  exactly once. A string that fails the check is left out of the file — the
+  runtime falls back to English for it and the next run retries it — and is
+  listed in the job summary.
+- **Partial results.** If Makima fails a language, the locales that succeeded
+  are published, the failed locale's file is left as the CDN had it, and the run
+  is marked failed *after* the upload so the site keeps working.
+- **Dry run.** With `DRY_RUN: "true"` the catalogues are attached as a workflow
+  artifact instead of being uploaded; use it for the first run on each
+  environment and diff the artifact against the live files.
+
+The action takes the following inputs:
+
+- `PROJECT_NAME`, `PROJECT_SOURCE_DIRECTORY`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+  `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`: as for the Crowdin action.
+- `ENVIRONMENT`: `staging` or `production` — the R2 sub-folder (what
+  `CROWDIN_BRANCH_NAME` was for).
+- `TARGET_LOCALES`: comma-separated locale codes to translate into, e.g. `es,fr,pt`.
+- `MAKIMA_API_KEY`: Bearer token for the gateway (a secret, minted by the
+  platform team against your team's LiteLLM service-account key).
+- `MAKIMA_API_BASE`: base URL of the gateway (default `https://pedro-api-dev.deriv.ai`).
+- `CDN_BASE_URL`: where the current catalogues are served (default `https://translations.deriv.com`).
+- `PROTECTED_TERMS_FILE`: optional path to a JSON array of strings that must never be translated.
+- `DRY_RUN`: `true` to write an artifact instead of uploading.
+
+It exposes two outputs, `status` (`noop`, `completed` or `partial`) and
+`kept_back` (the number of strings left out by the token check).
+
+### Example usage of the Makima action in the workflow file:
+
+```yaml
+name: Sync translations
+
+on:
+  push:
+    branches:
+      - 'main'
+  schedule:
+    - cron: '0 */12 * * *'
+
+jobs:
+  sync_translations:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync translations
+        uses: deriv-com/translations/.github/actions/extract_and_sync_translations_makima@main
+        with:
+          PROJECT_NAME: ${{ vars.R2_PROJECT_NAME }}
+          PROJECT_SOURCE_DIRECTORY: './src'
+          ENVIRONMENT: staging
+          TARGET_LOCALES: es,fr,pt
+          MAKIMA_API_KEY: ${{ secrets.MAKIMA_API_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+```
+
+The same bin can be run locally for a dry run after `npx deriv-extract-translations ./src`:
+
+```bash
+PROJECT_NAME=my-project ENVIRONMENT=staging TARGET_LOCALES=es,fr,pt \
+MAKIMA_API_KEY=… DRY_RUN=true npx deriv-makima-sync
+```
+
 ## Contributing
 
 Contributions are welcome. Please open a pull request with your changes.

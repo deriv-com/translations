@@ -1,0 +1,111 @@
+name: "Extract and sync translations (Makima)"
+description: "Extract localize() strings, translate the new ones with the Makima gateway, and upload the catalogues to Cloudflare R2"
+inputs:
+  PROJECT_NAME:
+    description: "Project name — the R2 folder the runtime reads from (same as the Crowdin action)"
+    required: true
+  PROJECT_SOURCE_DIRECTORY:
+    description: "Source directory to extract strings from"
+    required: false
+    default: "src"
+  ENVIRONMENT:
+    description: "staging or production — the R2 sub-folder (what CROWDIN_BRANCH_NAME was for)"
+    required: true
+  TARGET_LOCALES:
+    description: "Comma-separated locale codes to translate into, e.g. es,fr,pt"
+    required: true
+  MAKIMA_API_KEY:
+    description: "Bearer token for the Makima translation gateway (secret)"
+    required: true
+  MAKIMA_API_BASE:
+    description: "Base URL of the Makima API"
+    required: false
+    default: "https://pedro-api-dev.deriv.ai"
+  CDN_BASE_URL:
+    description: "Where the current catalogues are served from; used as the translation memory"
+    required: false
+    default: "https://translations.deriv.com"
+  PROTECTED_TERMS_FILE:
+    description: "Optional path (in the consumer repo) to a JSON array of terms that must never be translated, e.g. brand names"
+    required: false
+    default: ""
+  DRY_RUN:
+    description: "true: write the catalogues as a workflow artifact and skip the R2 upload"
+    required: false
+    default: "false"
+  R2_ACCOUNT_ID:
+    description: "R2 account ID from the Cloudflare R2 dashboard"
+    required: true
+  R2_ACCESS_KEY_ID:
+    description: "R2 access key ID from the Cloudflare R2 dashboard"
+    required: true
+  R2_SECRET_ACCESS_KEY:
+    description: "R2 secret access key from the Cloudflare R2 dashboard"
+    required: true
+  R2_BUCKET_NAME:
+    description: "R2 bucket name from the Cloudflare R2 dashboard"
+    required: true
+outputs:
+  status:
+    description: "noop (nothing new), completed, or partial (a language failed; its file was left as the CDN had it)"
+    value: ${{ steps.sync.outputs.status }}
+  kept_back:
+    description: "Number of strings left out because a placeholder, marker or protected term did not survive translation"
+    value: ${{ steps.sync.outputs.kept_back }}
+runs:
+  using: composite
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Use Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+    - name: Install dependencies
+      shell: bash
+      run: npm i @deriv-com/translations@latest --legacy-peer-deps
+    - name: Run extract script
+      shell: bash
+      env:
+        PROJECT_SOURCE_DIRECTORY: ${{ inputs.PROJECT_SOURCE_DIRECTORY }}
+      run: npx deriv-extract-translations $PROJECT_SOURCE_DIRECTORY --verbose
+    - name: Translate new strings with Makima
+      id: sync
+      shell: bash
+      env:
+        PROJECT_NAME: ${{ inputs.PROJECT_NAME }}
+        ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
+        TARGET_LOCALES: ${{ inputs.TARGET_LOCALES }}
+        MAKIMA_API_KEY: ${{ inputs.MAKIMA_API_KEY }}
+        MAKIMA_API_BASE: ${{ inputs.MAKIMA_API_BASE }}
+        CDN_BASE_URL: ${{ inputs.CDN_BASE_URL }}
+        PROTECTED_TERMS_FILE: ${{ inputs.PROTECTED_TERMS_FILE }}
+        DRY_RUN: ${{ inputs.DRY_RUN }}
+        TRANSLATIONS_DIR: translations
+      run: npx deriv-makima-sync
+    - name: Upload catalogues as an artifact (dry run)
+      if: ${{ inputs.DRY_RUN == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: translations-${{ inputs.PROJECT_NAME }}-${{ inputs.ENVIRONMENT }}
+        path: translations/
+        retention-days: 14
+    - name: R2 Upload Action to upload translations to Cloudflare
+      if: ${{ inputs.DRY_RUN != 'true' }}
+      uses: ryand56/r2-upload-action@latest
+      with:
+        r2-account-id: ${{ inputs.R2_ACCOUNT_ID }}
+        r2-access-key-id: ${{ inputs.R2_ACCESS_KEY_ID }}
+        r2-secret-access-key: ${{ inputs.R2_SECRET_ACCESS_KEY }}
+        r2-bucket: ${{ inputs.R2_BUCKET_NAME }}
+        source-dir: translations
+        destination-dir: ./${{ inputs.PROJECT_NAME }}/${{ inputs.ENVIRONMENT }}/translations
+    - name: Fail the run if a language was left behind
+      # Runs after the upload on purpose: the locales that succeeded are already
+      # live, and the failed one kept its previous file, so the site is fine and
+      # the red run is the signal to re-run.
+      if: ${{ steps.sync.outputs.status == 'partial' }}
+      shell: bash
+      run: |
+        echo "::error::Makima returned a partial result — see the job summary for the language that failed. Re-run the workflow to retry it."
+        exit 1
