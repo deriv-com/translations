@@ -18,9 +18,8 @@ inputs:
     description: "Bearer token for the Makima translation gateway (secret)"
     required: true
   MAKIMA_API_BASE:
-    description: "Base URL of the Makima API"
-    required: false
-    default: "https://pedro-api-dev.deriv.ai"
+    description: "Base URL of the Makima API, as given by the platform team (required: no default, so no consumer silently relies on a dev host)"
+    required: true
   CDN_BASE_URL:
     description: "Where the current catalogues are served from; used as the translation memory"
     required: false
@@ -64,11 +63,16 @@ runs:
     - name: Install dependencies
       shell: bash
       run: npm i @deriv-com/translations@latest --legacy-peer-deps
+    # Both bins are called by their installed path, never through a bare `npx
+    # <name>`: if the installed package lacked the bin, npx would download a
+    # registry package of that name and run it with the API key in scope.
     - name: Run extract script
       shell: bash
       env:
         PROJECT_SOURCE_DIRECTORY: ${{ inputs.PROJECT_SOURCE_DIRECTORY }}
-      run: npx deriv-extract-translations $PROJECT_SOURCE_DIRECTORY --verbose
+      run: |
+        test -x ./node_modules/.bin/deriv-extract-translations || { echo "::error::deriv-extract-translations is not in the installed @deriv-com/translations"; exit 1; }
+        ./node_modules/.bin/deriv-extract-translations "$PROJECT_SOURCE_DIRECTORY" --verbose
     - name: Translate new strings with Makima
       id: sync
       shell: bash
@@ -82,7 +86,9 @@ runs:
         PROTECTED_TERMS_FILE: ${{ inputs.PROTECTED_TERMS_FILE }}
         DRY_RUN: ${{ inputs.DRY_RUN }}
         TRANSLATIONS_DIR: translations
-      run: npx deriv-makima-sync
+      run: |
+        test -x ./node_modules/.bin/deriv-makima-sync || { echo "::error::deriv-makima-sync is not in the installed @deriv-com/translations — the release that ships it has not been published yet"; exit 1; }
+        ./node_modules/.bin/deriv-makima-sync
     - name: Upload catalogues as an artifact (dry run)
       if: ${{ inputs.DRY_RUN == 'true' }}
       uses: actions/upload-artifact@v4
@@ -92,7 +98,8 @@ runs:
         retention-days: 14
     - name: R2 Upload Action to upload translations to Cloudflare
       if: ${{ inputs.DRY_RUN != 'true' }}
-      uses: ryand56/r2-upload-action@latest
+      # Pinned to v1.5: this step handles the R2 credentials.
+      uses: ryand56/r2-upload-action@33ebb7a494b3a8a3c5ed2ea6bbdc72e707090317 # v1.5
       with:
         r2-account-id: ${{ inputs.R2_ACCOUNT_ID }}
         r2-access-key-id: ${{ inputs.R2_ACCESS_KEY_ID }}

@@ -108,11 +108,39 @@ function localeFileName(code) {
 // Token protection
 // ---------------------------------------------------------------------------
 
-const PLACEHOLDER_RE = /\{\{\s*[A-Za-z0-9_.-]+\s*\}\}/g;
+// Every interpolation shape i18next accepts: `{{name}}`, `{{count, number}}`,
+// `{{- raw}}`, and nested `$t(key)` lookups. Matching broadly here matters
+// because the same regex builds the signature the token check compares.
+const PLACEHOLDER_RE = /\{\{-?\s*[^{}]+?\s*\}\}|\$t\([^()]*\)/g;
 const MARKER_RE = /<(\/?)(\d+)>/g;
+const ENTITY_RE = /&(amp|lt|gt|quot|#39|apos);/g;
+const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", apos: "'" };
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Whole-term match: not glued to a letter or digit on either side. */
+function termRegExp(term) {
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(term)}(?![\\p{L}\\p{N}])`, "gu");
+}
+
+/**
+ * Count whole-term occurrences, longest term first, blanking each match so a
+ * term that contains another ("Deriv MCP" ⊃ "Deriv") is not counted twice.
+ */
+function countTerms(text, terms) {
+  const counts = {};
+  let work = text;
+  for (const term of [...new Set(terms)].sort((a, b) => b.length - a.length)) {
+    let n = 0;
+    work = work.replace(termRegExp(term), () => {
+      n += 1;
+      return "\u0001".repeat(term.length);
+    });
+    counts[term] = n;
+  }
+  return counts;
 }
 
 /**
@@ -133,8 +161,7 @@ function protect(text, protectedTerms = []) {
     (a, b) => b.length - a.length
   );
   for (const term of terms) {
-    const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(term)}(?![\\p{L}\\p{N}])`, "gu");
-    out = out.replace(re, () => {
+    out = out.replace(termRegExp(term), () => {
       tokens.push({ kind: "pt", original: term });
       return `<pt i="${tokens.length - 1}"></pt>`;
     });
@@ -167,6 +194,13 @@ function restore(translated, tokens, sourceEnglish) {
     return token && token.kind === kind ? token.original : `\u0000${kind}${i}\u0000`;
   });
   out = out.replace(/<(\/?)c(\d+)>/g, "<$1$2>");
+  // An HTML-aware translator may escape `&`, `<`, `>` and quotes on the way
+  // back. Decode the basic entities only when the source had none of them, so
+  // a source that legitimately contains `&amp;` is left alone.
+  if (!ENTITY_RE.test(sourceEnglish)) {
+    out = out.replace(ENTITY_RE, (_m, name) => ENTITIES[name]);
+  }
+  ENTITY_RE.lastIndex = 0;
 
   if (/\u0000|<\/?(?:ph|pt|c\d+)\b/.test(out)) {
     return { ok: false, text: out, reason: "a protected token was altered or lost" };
@@ -180,10 +214,10 @@ function restore(translated, tokens, sourceEnglish) {
     return { ok: false, text: out, reason: "component markers do not match the source" };
   }
   const expectedTerms = tokens.filter((t) => t.kind === "pt").map((t) => t.original);
+  const found = countTerms(out, expectedTerms);
   for (const term of new Set(expectedTerms)) {
     const wanted = expectedTerms.filter((t) => t === term).length;
-    const found = out.split(term).length - 1;
-    if (found !== wanted) {
+    if (found[term] !== wanted) {
       return { ok: false, text: out, reason: `protected term "${term}" does not appear exactly as in the source` };
     }
   }
@@ -214,11 +248,15 @@ function planLocale(en, prev) {
  * pass the token check. A key that was not returned, or whose tokens broke, is
  * left out (runtime falls back to English; the next run retries it).
  */
-function mergeLocale({ en, plan, translated, tokensByKey }) {
+function mergeLocale({ en, plan, translated, tokensByKey, failedKeys, failureMessage }) {
   const catalogue = { ...plan.reuse };
   const keptBack = [];
   let added = 0;
   for (const key of plan.missing) {
+    if (failedKeys && failedKeys.has(key)) {
+      keptBack.push({ key, english: en[key], reason: `language failed in Makima: ${failureMessage || "see errors"}` });
+      continue;
+    }
     const value = translated ? translated[key] : undefined;
     if (typeof value !== "string" || value.trim() === "") {
       keptBack.push({ key, english: en[key], reason: "not returned by Makima" });
@@ -239,9 +277,35 @@ function mergeLocale({ en, plan, translated, tokensByKey }) {
 // Makima client (submit → poll)
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE = "https://pedro-api-dev.deriv.ai";
 /** Keep each job well under Makima's 1,500,000-byte transport limit. */
 const MAX_CHUNK_BYTES = 400 * 1024;
+/** Per-request timeout; a hung socket must not stall the job for hours. */
+const FETCH_TIMEOUT_MS = 60 * 1000;
+
+function withTimeout(init, ms) {
+  if (typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") return init;
+  return { ...init, signal: AbortSignal.timeout(ms) };
+}
+
+/**
+ * fetch with a per-request timeout, retrying thrown network errors
+ * (ECONNRESET, DNS, TLS, timeout) the same way an HTTP 5xx is retried.
+ * Returns the Response; HTTP status handling stays with the caller.
+ */
+async function fetchWithRetry({ fetchImpl, url, init = {}, sleep, maxAttempts = 5, timeoutMs = FETCH_TIMEOUT_MS }) {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await fetchImpl(url, withTimeout(init, timeoutMs));
+    } catch (err) {
+      if (attempt >= maxAttempts) {
+        throw new Error(`Network error calling ${url} after ${attempt + 1} attempts: ${err && err.message ? err.message : err}`);
+      }
+      await sleep(retryDelayMs(null, attempt));
+      attempt += 1;
+    }
+  }
+}
 
 /** Split a key → text map into chunks that each serialise under the limit. */
 function chunkContent(content, maxBytes = MAX_CHUNK_BYTES) {
@@ -281,10 +345,18 @@ async function readJson(res) {
 async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5 }) {
   let attempt = 0;
   for (;;) {
-    const res = await fetchImpl(`${base}/api/makima/translate`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+    // A 5xx after the gateway actually accepted the job would create a
+    // duplicate on retry; that costs quota, not correctness, and the
+    // `reference` identifies both as the same sync.
+    const res = await fetchWithRetry({
+      fetchImpl,
+      sleep,
+      url: `${base}/api/makima/translate`,
+      init: {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
     });
     if (res.status === 202 || res.status === 200) {
       const json = await readJson(res);
@@ -307,8 +379,11 @@ async function pollJob({ fetchImpl, base, apiKey, jobId, sleep, maxWaitMs = 30 *
   let transient = 0;
   for (;;) {
     if (now() > deadline) throw new Error(`Makima job ${jobId} did not finish within ${maxWaitMs / 1000}s`);
-    const res = await fetchImpl(`${base}/api/makima/translate/${encodeURIComponent(jobId)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
+    const res = await fetchWithRetry({
+      fetchImpl,
+      sleep,
+      url: `${base}/api/makima/translate/${encodeURIComponent(jobId)}`,
+      init: { headers: { Authorization: `Bearer ${apiKey}` } },
     });
     if (res.status === 429 || res.status >= 500) {
       if (transient >= 8) throw new Error(`Makima poll for ${jobId} kept failing with HTTP ${res.status}`);
@@ -332,15 +407,28 @@ async function pollJob({ fetchImpl, base, apiKey, jobId, sleep, maxWaitMs = 30 *
 
 /**
  * Translate a key → protected-English map into every target language.
- * Returns `{ status, results: { [languageName]: { key: text } }, errors }`,
- * merged across chunks; `status` is `partial` if any chunk or language was.
+ * Returns `{ status, results, errors, failedKeys }`:
+ *   results    { [languageName]: { key: text } } merged across chunks
+ *   errors     { [languageName]: lastMessage } for languages that failed anywhere
+ *   failedKeys { [languageName]: Set(keys) } the keys of the chunks that failed
+ * A failure is tracked per chunk, so a language that succeeded in chunk 1 and
+ * failed in chunk 2 keeps chunk 1's translations; only chunk 2's keys are
+ * retried on the next run. `status` is `partial` if anything failed.
  */
 async function translateContent({ content, targetNames, reference, fetchImpl, base, apiKey, sleep, log = () => {} }) {
   const results = {};
   const errors = {};
+  const failedKeys = {};
   let status = "completed";
   const chunks = chunkContent(content);
+  const fail = (language, message, keys) => {
+    errors[language] = String(message);
+    failedKeys[language] = failedKeys[language] || new Set();
+    keys.forEach((k) => failedKeys[language].add(k));
+    status = "partial";
+  };
   for (let i = 0; i < chunks.length; i += 1) {
+    const chunkKeys = Object.keys(chunks[i]);
     const chunkRef = chunks.length > 1 ? `${reference}#${i + 1}of${chunks.length}` : reference;
     const jobId = await submitJob({
       fetchImpl,
@@ -354,32 +442,30 @@ async function translateContent({ content, targetNames, reference, fetchImpl, ba
         content: chunks[i],
       },
     });
-    log(`Submitted job ${jobId} (${Object.keys(chunks[i]).length} strings, ref ${chunkRef})`);
+    log(`Submitted job ${jobId} (${chunkKeys.length} strings, ref ${chunkRef})`);
     const body = await pollJob({ fetchImpl, base, apiKey, jobId, sleep });
-    if (body.status === "partial") status = "partial";
-    for (const [language, value] of Object.entries(body.results || {})) {
-      if (value && typeof value === "object") {
+    const returned = body.results || {};
+    for (const language of targetNames) {
+      const value = returned[language];
+      if (body.errors && body.errors[language]) {
+        fail(language, body.errors[language], chunkKeys);
+      } else if (value && typeof value === "object") {
         results[language] = { ...(results[language] || {}), ...value };
       } else {
-        errors[language] = `unexpected result shape for ${language} in job ${jobId}`;
-        status = "partial";
+        fail(language, `no result for ${language} in job ${jobId}`, chunkKeys);
       }
     }
-    for (const [language, message] of Object.entries(body.errors || {})) {
-      errors[language] = String(message);
-      status = "partial";
-    }
   }
-  return { status, results, errors };
+  return { status, results, errors, failedKeys };
 }
 
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
-async function fetchPrevious({ fetchImpl, cdnBase, project, environment, locale, log }) {
+async function fetchPrevious({ fetchImpl, cdnBase, project, environment, locale, log, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const url = `${cdnBase.replace(/\/$/, "")}/${project}/${environment}/translations/${localeFileName(locale)}`;
-  const res = await fetchImpl(url, { headers: { "Cache-Control": "no-cache" } });
+  const res = await fetchWithRetry({ fetchImpl, sleep, url, init: { headers: { "Cache-Control": "no-cache" } } });
   if (res.status === 404) {
     log(`No previous catalogue at ${url} (404) — starting ${locale} from empty`);
     return {};
@@ -426,7 +512,9 @@ function appendOutput(file, lines) {
 }
 
 function readEnv(env) {
-  const required = ["PROJECT_NAME", "ENVIRONMENT", "TARGET_LOCALES", "MAKIMA_API_KEY"];
+  // MAKIMA_API_BASE is deliberately required: the guide's only published host
+  // is a `-dev` one, and no consumer should fall back to it without noticing.
+  const required = ["PROJECT_NAME", "ENVIRONMENT", "TARGET_LOCALES", "MAKIMA_API_KEY", "MAKIMA_API_BASE"];
   for (const name of required) {
     if (!env[name] || !String(env[name]).trim()) throw new Error(`${name} is required`);
   }
@@ -445,7 +533,7 @@ function readEnv(env) {
     environment,
     locales,
     apiKey: String(env.MAKIMA_API_KEY),
-    base: (env.MAKIMA_API_BASE || DEFAULT_BASE).replace(/\/$/, ""),
+    base: String(env.MAKIMA_API_BASE).trim().replace(/\/$/, ""),
     cdnBase: env.CDN_BASE_URL || "https://translations.deriv.com",
     dryRun: /^(1|true|yes)$/i.test(String(env.DRY_RUN || "")),
     translationsDir: path.resolve(env.TRANSLATIONS_DIR || "./translations"),
@@ -485,7 +573,7 @@ async function main(env = process.env, io = {}) {
   const plans = {};
   const union = new Set();
   for (const locale of cfg.locales) {
-    const prev = await fetchPrevious({ fetchImpl, cdnBase: cfg.cdnBase, project: cfg.project, environment: cfg.environment, locale, log });
+    const prev = await fetchPrevious({ fetchImpl, cdnBase: cfg.cdnBase, project: cfg.project, environment: cfg.environment, locale, log, sleep });
     plans[locale] = planLocale(en, prev);
     plans[locale].missing.forEach((k) => union.add(k));
     log(`${locale}: ${Object.keys(plans[locale].reuse).length} reused, ${plans[locale].missing.length} to translate, ${plans[locale].pruned.length} pruned`);
@@ -503,42 +591,67 @@ async function main(env = process.env, io = {}) {
   let status = "noop";
   let results = {};
   let makimaErrors = {};
+  let failedKeys = {};
   if (union.size > 0) {
     const out = await translateContent({ content, targetNames, reference: cfg.reference, fetchImpl, base: cfg.base, apiKey: cfg.apiKey, sleep, log });
     status = out.status;
     results = out.results;
     makimaErrors = out.errors;
+    failedKeys = out.failedKeys;
   } else {
     log("Nothing new to translate — every key is already on the CDN");
   }
 
-  // Merge and write per locale.
+  // Merge and write per locale. A key whose chunk failed, or that came back
+  // broken, is left out: the file keeps every reused string plus the new ones
+  // that passed, the runtime shows English for the rest, and the next run
+  // retries exactly those keys because they are still missing.
   fs.mkdirSync(cfg.translationsDir, { recursive: true });
   const perLocale = [];
   for (const locale of cfg.locales) {
     const languageName = makimaNameFor(locale);
     const plan = plans[locale];
-    const failed = Object.prototype.hasOwnProperty.call(makimaErrors, languageName);
-    if (failed && plan.missing.length > 0) {
-      // Leave this locale exactly as the CDN has it (pruned keys included):
-      // nothing new is known, and a half-written file would be worse.
-      const prevFile = { ...plan.reuse };
-      fs.writeFileSync(path.join(cfg.translationsDir, localeFileName(locale)), JSON.stringify(prevFile));
-      perLocale.push({ locale, reused: Object.keys(plan.reuse).length, added: 0, pruned: plan.pruned.length, keptBack: plan.missing.map((key) => ({ key, english: en[key], reason: `language failed: ${makimaErrors[languageName]}` })), note: "language failed — file unchanged apart from pruning" });
-      continue;
-    }
-    const merged = mergeLocale({ en, plan, translated: results[languageName], tokensByKey });
+    const merged = mergeLocale({
+      en,
+      plan,
+      translated: results[languageName],
+      tokensByKey,
+      failedKeys: failedKeys[languageName],
+      failureMessage: makimaErrors[languageName],
+    });
     fs.writeFileSync(path.join(cfg.translationsDir, localeFileName(locale)), JSON.stringify(merged.catalogue));
-    perLocale.push({ locale, ...merged });
+    const note = makimaErrors[languageName] ? "Makima failed this language for some or all chunks; those keys are left out and retried next run" : "";
+    perLocale.push({ locale, ...merged, note });
   }
 
   const keptBackTotal = perLocale.reduce((n, r) => n + r.keptBack.length, 0);
   const summary = buildSummary({ project: cfg.project, environment: cfg.environment, reference: cfg.reference, status, perLocale, makimaErrors, dryRun: cfg.dryRun });
   log(summary);
   if (cfg.summaryFile) fs.appendFileSync(cfg.summaryFile, `${summary}\n`);
+  // Surface problems as workflow annotations, not only in the summary table.
+  if (status === "partial") log(`::warning::Makima returned a partial result for ${cfg.project}/${cfg.environment}: ${Object.keys(makimaErrors).join(", ")} — see the job summary`);
+  if (keptBackTotal > 0) log(`::warning::${keptBackTotal} string(s) were kept out of the ${cfg.project}/${cfg.environment} catalogues because a placeholder, marker or protected term did not survive translation — see the job summary`);
   appendOutput(cfg.outputFile, [`status=${status}`, `kept_back=${keptBackTotal}`, `translated=${union.size}`]);
   return { status, perLocale, keptBackTotal };
 }
+
+/** Small file helpers for tests; the test runner has no Node type definitions. */
+const testSupport = {
+  makeTempDir(prefix = "makima-sync-") {
+    return fs.mkdtempSync(path.join(require("os").tmpdir(), prefix));
+  },
+  writeJson(file, value) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(value));
+  },
+  readJson(file) {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  },
+  readText(file) {
+    return fs.readFileSync(file, "utf8");
+  },
+  join: (...parts) => path.join(...parts),
+};
 
 module.exports = {
   LANGUAGES,
@@ -554,9 +667,12 @@ module.exports = {
   pollJob,
   translateContent,
   fetchPrevious,
+  fetchWithRetry,
+  countTerms,
   buildSummary,
   readEnv,
   main,
+  testSupport,
 };
 
 if (require.main === module) {

@@ -170,7 +170,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Sync translations
-        uses: deriv-com/translations/.github/actions/extract_and_sync_translations@main
+        uses: deriv-com/translations/.github/actions/extract_and_sync_translations@master
         with:
           PROJECT_NAME: ${{ env.PROJECT_NAME }}
           CROWDIN_BRANCH_NAME: ${{ env.CROWDIN_BRANCH_NAME }}
@@ -210,7 +210,15 @@ How it keeps translations stable:
   is marked failed *after* the upload so the site keeps working.
 - **Dry run.** With `DRY_RUN: "true"` the catalogues are attached as a workflow
   artifact instead of being uploaded; use it for the first run on each
-  environment and diff the artifact against the live files.
+  environment and diff the artifact against the live files. Make sure that
+  first run includes a few new strings with `&`, `<`, quotes and a `{{x}}`
+  placeholder, so the gateway's handling of them is seen before anything is
+  published.
+- **What counts as translated.** Any string value already on the CDN is
+  reused, including one identical to the English. That is deliberate (product
+  names such as "Wallet API" are kept in English on purpose), but it also means
+  a key that was once published untranslated is never resent; delete it from
+  the CDN file to have it translated.
 
 The action takes the following inputs:
 
@@ -221,7 +229,7 @@ The action takes the following inputs:
 - `TARGET_LOCALES`: comma-separated locale codes to translate into, e.g. `es,fr,pt`.
 - `MAKIMA_API_KEY`: Bearer token for the gateway (a secret, minted by the
   platform team against your team's LiteLLM service-account key).
-- `MAKIMA_API_BASE`: base URL of the gateway (default `https://pedro-api-dev.deriv.ai`).
+- `MAKIMA_API_BASE`: base URL of the gateway as given by the platform team. Required, with no default, so no consumer silently relies on a dev host.
 - `CDN_BASE_URL`: where the current catalogues are served (default `https://translations.deriv.com`).
 - `PROTECTED_TERMS_FILE`: optional path to a JSON array of strings that must never be translated.
 - `DRY_RUN`: `true` to write an artifact instead of uploading.
@@ -241,18 +249,25 @@ on:
   schedule:
     - cron: '0 */12 * * *'
 
+# Two runs reading the same CDN snapshot would both upload, last writer wins;
+# serialise them.
+concurrency:
+  group: sync-translations-makima
+  cancel-in-progress: false
+
 jobs:
   sync_translations:
     runs-on: ubuntu-latest
     steps:
       - name: Sync translations
-        uses: deriv-com/translations/.github/actions/extract_and_sync_translations_makima@main
+        uses: deriv-com/translations/.github/actions/extract_and_sync_translations_makima@master
         with:
           PROJECT_NAME: ${{ vars.R2_PROJECT_NAME }}
           PROJECT_SOURCE_DIRECTORY: './src'
           ENVIRONMENT: staging
           TARGET_LOCALES: es,fr,pt
           MAKIMA_API_KEY: ${{ secrets.MAKIMA_API_KEY }}
+          MAKIMA_API_BASE: ${{ vars.MAKIMA_API_BASE }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -263,7 +278,7 @@ The same bin can be run locally for a dry run after `npx deriv-extract-translati
 
 ```bash
 PROJECT_NAME=my-project ENVIRONMENT=staging TARGET_LOCALES=es,fr,pt \
-MAKIMA_API_KEY=… DRY_RUN=true npx deriv-makima-sync
+MAKIMA_API_BASE=https://… MAKIMA_API_KEY=… DRY_RUN=true npx deriv-makima-sync
 ```
 
 ## Contributing
