@@ -57,7 +57,7 @@ runs:
     - name: Install the extractor's dependencies
       shell: bash
       working-directory: ${{ github.action_path }}/../../..
-      run: npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund
+      run: npm ci --omit=dev --omit=peer --omit=optional --ignore-scripts --no-audit --no-fund
 
     - name: Run extract script
       shell: bash
