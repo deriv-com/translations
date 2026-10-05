@@ -51,15 +51,19 @@ runs:
       with:
         node-version: "20"
 
-    - name: Install dependencies
+    # The extractor runs from this action's own commit, with dependencies from
+    # that commit's lockfile, not from `npm i @deriv-com/translations@latest`.
+    # See extract_and_sync_translations_makima for why.
+    - name: Install the extractor's dependencies
       shell: bash
-      run: npm i @deriv-com/translations@latest --legacy-peer-deps
+      working-directory: ${{ github.action_path }}/../../..
+      run: npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund
 
     - name: Run extract script
       shell: bash
       env:
         PROJECT_SOURCE_DIRECTORY: ${{ inputs.PROJECT_SOURCE_DIRECTORY }}
-      run: npx deriv-extract-translations $PROJECT_SOURCE_DIRECTORY --verbose
+      run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-extract-translations.cjs" "$PROJECT_SOURCE_DIRECTORY" --verbose
 
     - name: Setup crowdin config
       shell: bash
