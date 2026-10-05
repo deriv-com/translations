@@ -237,6 +237,12 @@ The action takes the following inputs:
 It exposes two outputs, `status` (`noop`, `completed` or `partial`) and
 `kept_back` (the number of strings left out by the token check).
 
+Pin the action to a release commit by SHA (`…_makima@<sha> # v1.x.y`) rather
+than `@master`. Both actions run their scripts from their own commit, with
+dependencies from that commit's `package-lock.json`, and never install
+`@deriv-com/translations` from npm. So the pin also covers the extractor and
+the sync that runs with `MAKIMA_API_KEY`, not only the action's steps.
+
 ### Example usage of the Makima action in the workflow file:
 
 ```yaml

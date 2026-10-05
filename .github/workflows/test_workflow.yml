@@ -24,8 +24,10 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
+      # npm ci, not npm install: it fails when package-lock.json is out of sync,
+      # and the sync actions install from that lockfile with npm ci.
       - name: Install dependencies
-        run: npm install
+        run: npm ci
       - name: Verify the integrity of provenance attestations and registry signatures for installed dependencies
         run: npm audit signatures
       - name: Run the tests

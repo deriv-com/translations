@@ -60,19 +60,21 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: "20"
-    - name: Install dependencies
+    # Both scripts run from this action's own commit, and the extractor's
+    # dependencies come from that commit's lockfile, so pinning the action also
+    # pins the translation code that runs with the API key.
+    # Never `npm i @deriv-com/translations@latest` here: that runs whatever
+    # release is newest, whatever the consumer pinned. Never `npx <bin>` either:
+    # a missing bin makes npx fetch a registry package of that name.
+    - name: Install the extractor's dependencies
       shell: bash
-      run: npm i @deriv-com/translations@latest --legacy-peer-deps
-    # Both bins are called by their installed path, never through a bare `npx
-    # <name>`: if the installed package lacked the bin, npx would download a
-    # registry package of that name and run it with the API key in scope.
+      working-directory: ${{ github.action_path }}/../../..
+      run: npm ci --omit=dev --omit=peer --omit=optional --ignore-scripts --no-audit --no-fund
     - name: Run extract script
       shell: bash
       env:
         PROJECT_SOURCE_DIRECTORY: ${{ inputs.PROJECT_SOURCE_DIRECTORY }}
-      run: |
-        test -x ./node_modules/.bin/deriv-extract-translations || { echo "::error::deriv-extract-translations is not in the installed @deriv-com/translations"; exit 1; }
-        ./node_modules/.bin/deriv-extract-translations "$PROJECT_SOURCE_DIRECTORY" --verbose
+      run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-extract-translations.cjs" "$PROJECT_SOURCE_DIRECTORY" --verbose
     - name: Translate new strings with Makima
       id: sync
       shell: bash
@@ -86,9 +88,8 @@ runs:
         PROTECTED_TERMS_FILE: ${{ inputs.PROTECTED_TERMS_FILE }}
         DRY_RUN: ${{ inputs.DRY_RUN }}
         TRANSLATIONS_DIR: translations
-      run: |
-        test -x ./node_modules/.bin/deriv-makima-sync || { echo "::error::deriv-makima-sync is not in the installed @deriv-com/translations — the release that ships it has not been published yet"; exit 1; }
-        ./node_modules/.bin/deriv-makima-sync
+      # Node built-ins only, so it needs nothing installed.
+      run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-makima-sync.cjs"
     - name: Upload catalogues as an artifact (dry run)
       if: ${{ inputs.DRY_RUN == 'true' }}
       uses: actions/upload-artifact@v4
