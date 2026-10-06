@@ -52,8 +52,9 @@ const LANGUAGES = [
   { code: "si", name: "Sinhala" },
   { code: "tr", name: "Turkish" },
   { code: "sw", name: "Swahili" },
-  { code: "zh-CN", name: "Simplified Chinese" },
-  { code: "zh-Hant-TW", name: "Traditional Chinese" },
+  // Aliases are the runtime's spellings (ALL_LANGUAGES ZH_CN / ZH_TW), so the CDN files are zh_cn.json / zh_tw.json.
+  { code: "zh-CN", name: "Simplified Chinese", aliases: ["zh_cn"] },
+  { code: "zh-Hant-TW", name: "Traditional Chinese", aliases: ["zh_tw"] },
   { code: "ko", name: "Korean" },
   { code: "it", name: "Italian" },
   { code: "de", name: "German" },
@@ -91,10 +92,11 @@ const LANGUAGES = [
  */
 function makimaNameFor(code) {
   const wanted = String(code).trim().toLowerCase();
-  const hit = LANGUAGES.find((l) => l.code.toLowerCase() === wanted);
+  const codesOf = (l) => [l.code, ...(l.aliases || [])];
+  const hit = LANGUAGES.find((l) => codesOf(l).some((c) => c.toLowerCase() === wanted));
   if (!hit) {
     throw new Error(
-      `Unknown locale "${code}". Known codes: ${LANGUAGES.map((l) => l.code).join(", ")}`
+      `Unknown locale "${code}". Known codes: ${LANGUAGES.flatMap(codesOf).join(", ")}`
     );
   }
   return hit.name;
