@@ -26,7 +26,7 @@
     "react-i18next": ">=14.0.0"
   },
   "devDependencies": {
-    "@babel/core": "^7.29.0",
+    "@babel/core": "^7.29.6",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/commit-analyzer": "^13.0.1",
     "@semantic-release/github": "^12.0.6",
@@ -50,7 +50,7 @@
     "react-i18next": "^17.0.2",
     "semantic-release": "^25.0.3",
     "typescript": "^6.0.2",
-    "vite": "^8.0.4",
+    "vite": "^8.0.16",
     "vite-plugin-dts": "^4.5.4",
     "vitest": "^4.1.11"
   },
@@ -63,7 +63,7 @@
     "brace-expansion": "5.0.12",
     "js-yaml": "4.3.2",
     "browserslist": "4.28.7",
-    "nanoid": "3.3.18",
+    "nanoid": "3.3.19",
     "fast-uri": "3.1.8",
     "undici": "7.29.1",
     "baseline-browser-mapping": "2.11.0",
