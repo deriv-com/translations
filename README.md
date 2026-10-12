@@ -227,6 +227,8 @@ The action takes the following inputs:
 - `ENVIRONMENT`: `staging` or `production` — the R2 sub-folder (what
   `CROWDIN_BRANCH_NAME` was for).
 - `TARGET_LOCALES`: comma-separated locale codes to translate into, e.g. `es,fr,pt`.
+  Chinese also accepts the runtime's `zh_cn` / `zh_tw` (the `ZH_CN` / `ZH_TW` language
+  codes), and the file keeps that name.
 - `MAKIMA_API_KEY`: Bearer token for the gateway (a secret, minted by the
   platform team against your team's LiteLLM service-account key).
 - `MAKIMA_API_BASE`: base URL of the gateway as given by the platform team. Required, with no default, so no consumer silently relies on a dev host.

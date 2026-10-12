@@ -8,7 +8,7 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 type Env = Record<string, string | undefined>;
 
 interface SyncModule {
-  LANGUAGES: { code: string; name: string }[];
+  LANGUAGES: { code: string; name: string; aliases?: string[] }[];
   makimaNameFor(code: string): string;
   localeFileName(code: string): string;
   protect(text: string, terms?: string[]): { text: string; tokens: Token[] };
@@ -78,6 +78,15 @@ describe("locale mapping", () => {
   it("rejects an unknown code and lower-cases the file name", () => {
     expect(() => sync.makimaNameFor("xx")).toThrow(/Unknown locale "xx"/);
     expect(sync.localeFileName("ES")).toBe("es.json");
+  });
+
+  it("accepts the runtime's zh_cn / zh_tw spellings and keeps them as the file name", () => {
+    expect(sync.makimaNameFor("zh_cn")).toBe("Simplified Chinese");
+    expect(sync.makimaNameFor("ZH_TW")).toBe("Traditional Chinese");
+    expect(sync.makimaNameFor("zh-CN")).toBe("Simplified Chinese");
+    expect(sync.makimaNameFor("zh-Hant-TW")).toBe("Traditional Chinese");
+    expect(sync.localeFileName("ZH_CN")).toBe("zh_cn.json");
+    expect(() => sync.makimaNameFor("xx")).toThrow(/zh-CN, zh_cn, zh-Hant-TW, zh_tw/);
   });
 });
 
@@ -399,6 +408,38 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
     expect(readText(join(dir, "output.txt"))).toBe("status=completed\nkept_back=0\ntranslated=3\n");
     expect(readText(join(dir, "summary.md"))).toContain("| es | 1 | 2 | 1 | 0 |");
     expect(logs.join("\n")).not.toContain("secret");
+  });
+
+  it("reads and writes zh_cn / zh_tw catalogues under the runtime's file names", async () => {
+    const en = { a: "Alpha", b: "Beta" };
+    const { dir, env } = setup(en);
+    env.TARGET_LOCALES = "zh_cn,zh_tw";
+    const cdnUrls: string[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      if (url.startsWith("https://cdn.test/")) {
+        cdnUrls.push(url);
+        return jsonResponse(200, { a: url.endsWith("/zh_cn.json") ? "阿尔法" : "阿爾法" });
+      }
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { content: Record<string, string>; target_languages: string[] };
+        expect(Object.keys(body.content)).toEqual(["b"]);
+        expect(body.target_languages).toEqual(["Simplified Chinese", "Traditional Chinese"]);
+        return jsonResponse(202, { job_id: "job-zh", status: "queued" });
+      }
+      return jsonResponse(200, {
+        status: "completed",
+        results: { "Simplified Chinese": { b: "贝塔" }, "Traditional Chinese": { b: "貝塔" } },
+        errors: null,
+      });
+    };
+    const result = await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: () => {} });
+    expect(result.status).toBe("completed");
+    expect(cdnUrls).toEqual([
+      "https://cdn.test/proj/staging/translations/zh_cn.json",
+      "https://cdn.test/proj/staging/translations/zh_tw.json",
+    ]);
+    expect(readJson(join(dir, "translations", "zh_cn.json"))).toEqual({ a: "阿尔法", b: "贝塔" });
+    expect(readJson(join(dir, "translations", "zh_tw.json"))).toEqual({ a: "阿爾法", b: "貝塔" });
   });
 
   it("keeps back broken and failed strings, warns, and still writes every locale", async () => {
