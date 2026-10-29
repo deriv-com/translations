@@ -219,6 +219,28 @@ How it keeps translations stable:
   names such as "Wallet API" are kept in English on purpose), but it also means
   a key that was once published untranslated is never resent; delete it from
   the CDN file to have it translated.
+- **Reviewed values travel between environments.** With
+  `FALLBACK_ENVIRONMENT: staging` on the production sync, a key production
+  lacks takes the value in the staging catalogue (the one QA reviewed) before
+  Makima is asked; equal keys mean equal English, because keys are the crc32 of
+  the text. `FALLBACK_MODE: prefer` goes further: staging's value also replaces
+  a different one production already has, so the two catalogues converge. A
+  staging value must pass the same placeholder, marker and protected-term check
+  as Makima's output; one that does not is listed in the job summary and the
+  key falls through to production's own value (prefer) or Makima (missing).
+  Keys only staging has are never added, and production keys no longer in
+  `en.json` are still pruned.
+- **Corrections go through a pull request.** `OVERRIDES_FILE` points at a JSON
+  file in your repository, keyed by locale and then by the English source text:
+
+  ```json
+  { "fr": { "1 Change": "1 modification" }, "es": { "Edited {{time}} ago": "Editado hace {{time}}" } }
+  ```
+
+  Overrides win over every other source, in every environment that passes the
+  file. An entry that fails the token check fails the run; an entry whose
+  English is no longer extracted (the string was reworded or removed) is
+  skipped and listed in the job summary, so remove or update it.
 
 The action takes the following inputs:
 
@@ -234,10 +256,15 @@ The action takes the following inputs:
 - `MAKIMA_API_BASE`: base URL of the gateway as given by the platform team. Required, with no default, so no consumer silently relies on a dev host.
 - `CDN_BASE_URL`: where the current catalogues are served (default `https://translations.deriv.com`).
 - `PROTECTED_TERMS_FILE`: optional path to a JSON array of strings that must never be translated.
+- `FALLBACK_ENVIRONMENT`: optional `staging` or `production`, another environment whose catalogue is consulted before Makima. Must differ from `ENVIRONMENT`.
+- `FALLBACK_MODE`: `missing` (default) uses the fallback only for keys this environment lacks; `prefer` also lets it replace this environment's own values.
+- `OVERRIDES_FILE`: optional path to reviewed corrections, shaped `{"<locale>": {"<English text>": "<translation>"}}`.
 - `DRY_RUN`: `true` to write an artifact instead of uploading.
 
-It exposes two outputs, `status` (`noop`, `completed` or `partial`) and
-`kept_back` (the number of strings left out by the token check).
+It exposes four outputs: `status` (`noop`, `completed` or `partial`),
+`kept_back` (the number of strings left out by the token check),
+`from_fallback` (values taken from `FALLBACK_ENVIRONMENT`) and `overridden`
+(values set from `OVERRIDES_FILE`).
 
 Pin the action to a release commit by SHA (`…_makima@<sha> # v1.x.y`) rather
 than `@master`. Both actions run their scripts from their own commit, with

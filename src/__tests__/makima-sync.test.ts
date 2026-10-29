@@ -1,9 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
 
 type Token = { kind: "ph" | "pt"; original: string };
-type Plan = { reuse: Record<string, string>; missing: string[]; pruned: string[] };
 type KeptBack = { key: string; english: string; reason: string };
-type MergeResult = { catalogue: Record<string, string>; keptBack: KeptBack[]; added: number; reused: number; pruned: number };
+type Plan = {
+  reuse: Record<string, string>;
+  fromFallback?: Record<string, string>;
+  overridden?: Record<string, string>;
+  missing: string[];
+  pruned: string[];
+  rejectedFallback?: KeptBack[];
+};
+type PlanOptions = {
+  fallback?: Record<string, string>;
+  fallbackMode?: "missing" | "prefer";
+  overrides?: Record<string, string>;
+  protectedTerms?: string[];
+};
+type MergeResult = {
+  catalogue: Record<string, string>;
+  keptBack: KeptBack[];
+  added: number;
+  reused: number;
+  fromFallback: number;
+  overridden: number;
+  pruned: number;
+};
+type Overrides = {
+  byLocale: Record<string, Record<string, string>>;
+  stale: { locale: string; english: string }[];
+  ignoredLocales: string[];
+};
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 type Env = Record<string, string | undefined>;
 
@@ -14,7 +40,9 @@ interface SyncModule {
   protect(text: string, terms?: string[]): { text: string; tokens: Token[] };
   restore(translated: string, tokens: Token[], source: string): { ok: boolean; text: string; reason: string | null };
   countTerms(text: string, terms: string[]): Record<string, number>;
-  planLocale(en: Record<string, string>, prev: Record<string, string>): Plan;
+  checkTranslation(text: unknown, source: string, terms?: string[]): { ok: boolean; reason: string | null };
+  planLocale(en: Record<string, string>, prev: Record<string, string>, options?: PlanOptions): Plan;
+  resolveOverrides(raw: unknown, args: { en: Record<string, string>; locales: string[]; protectedTerms?: string[]; file?: string }): Overrides;
   mergeLocale(args: {
     en: Record<string, string>;
     plan: Plan;
@@ -35,17 +63,41 @@ interface SyncModule {
     apiKey: string;
     sleep: (ms: number) => Promise<void>;
   }): Promise<{ status: string; results: Record<string, Record<string, string>>; errors: Record<string, string>; failedKeys: Record<string, Set<string>> }>;
-  readEnv(env: Env): { locales: string[]; dryRun: boolean; base: string; reference: string };
+  readEnv(env: Env): {
+    locales: string[];
+    dryRun: boolean;
+    base: string;
+    reference: string;
+    fallbackEnvironment: string | null;
+    fallbackMode: string;
+    overridesFile: string | null;
+  };
   buildSummary(args: {
     project: string;
     environment: string;
     reference: string;
     status: string;
-    perLocale: { locale: string; reused: number; added: number; pruned: number; keptBack: KeptBack[]; note?: string }[];
+    perLocale: {
+      locale: string;
+      reused: number;
+      added: number;
+      pruned: number;
+      keptBack: KeptBack[];
+      fromFallback?: number;
+      overridden?: number;
+      rejectedFallback?: KeptBack[];
+      note?: string;
+    }[];
     makimaErrors: Record<string, string>;
     dryRun: boolean;
+    fallbackEnvironment?: string | null;
+    fallbackMode?: string;
+    overrides?: Overrides | null;
   }): string;
-  main(env: Env, io: { fetch: FetchLike; sleep: (ms: number) => Promise<void>; log: (m: string) => void }): Promise<{ status: string; keptBackTotal: number }>;
+  main(
+    env: Env,
+    io: { fetch: FetchLike; sleep: (ms: number) => Promise<void>; log: (m: string) => void },
+  ): Promise<{ status: string; keptBackTotal: number; fromFallbackTotal: number; overriddenTotal: number }>;
   testSupport: {
     makeTempDir(prefix?: string): string;
     writeJson(file: string, value: unknown): void;
@@ -158,7 +210,7 @@ describe("delta and merge", () => {
 
   it("reuses what the CDN has, translates only missing keys, and prunes removed ones", () => {
     const plan = sync.planLocale(en, { a: "Alfa", z: "Zeta (removed)" });
-    expect(plan).toEqual({ reuse: { a: "Alfa" }, missing: ["b", "c"], pruned: ["z"] });
+    expect(plan).toEqual({ reuse: { a: "Alfa" }, fromFallback: {}, overridden: {}, missing: ["b", "c"], pruned: ["z"], rejectedFallback: [] });
   });
 
   it("writes passing translations, leaves failures out, and reports them", () => {
@@ -186,6 +238,110 @@ describe("delta and merge", () => {
       { key: "b", english: "Beta {{n}}", reason: "not returned by Makima" },
       { key: "c", english: "Gamma", reason: "language failed in Makima: upstream 500" },
     ]);
+  });
+});
+
+describe("checking a value that is already translated", () => {
+  const terms = ["Deriv", "Deriv MCP"];
+
+  it("accepts a value with the source's placeholders, markers and protected terms", () => {
+    expect(sync.checkTranslation("Abrir {{ name }} en <0>Deriv MCP</0>", "Open {{name}} in <0>Deriv MCP</0>", terms)).toEqual({ ok: true, reason: null });
+    expect(sync.checkTranslation("Hola", "Hello", terms).ok).toBe(true);
+  });
+
+  it("rejects a lost placeholder or marker, a translated or repeated term, and an empty value", () => {
+    expect(sync.checkTranslation("Abrir en Deriv", "Open {{name}} in Deriv", terms).reason).toMatch(/placeholders/);
+    expect(sync.checkTranslation("Abrir {{name}}", "Open <0>{{name}}</0>", terms).reason).toMatch(/markers/);
+    expect(sync.checkTranslation("Abrir Dériv", "Open Deriv", terms).reason).toMatch(/"Deriv"/);
+    expect(sync.checkTranslation("Deriv y Deriv", "Deriv", terms).reason).toMatch(/"Deriv"/);
+    expect(sync.checkTranslation("  ", "Hello", terms).ok).toBe(false);
+    expect(sync.checkTranslation(42, "Hello", terms).ok).toBe(false);
+  });
+
+  it("ignores a protected term the source does not contain", () => {
+    expect(sync.checkTranslation("Deriv te saluda", "Hello", terms).ok).toBe(true);
+  });
+});
+
+describe("fallback environment and overrides in the plan", () => {
+  const en = { a: "Alpha", b: "Beta {{n}}", c: "Gamma", d: "Delta" };
+
+  it("missing mode: keeps this environment's value and fills only its gaps from the fallback", () => {
+    const plan = sync.planLocale(en, { a: "Alfa-prod", z: "Pruned" }, { fallback: { a: "Alfa-stg", b: "Beta-stg {{n}}", y: "Staging only" } });
+    expect(plan.reuse).toEqual({ a: "Alfa-prod" });
+    expect(plan.fromFallback).toEqual({ b: "Beta-stg {{n}}" });
+    expect(plan.missing).toEqual(["c", "d"]);
+    expect(plan.pruned).toEqual(["z"]);
+  });
+
+  it("prefer mode: the fallback replaces a differing value, and an equal one counts as reused", () => {
+    const plan = sync.planLocale(en, { a: "Alfa-prod", c: "Gama" }, { fallback: { a: "Alfa-stg", c: "Gama", d: "Delta-stg" }, fallbackMode: "prefer" });
+    expect(plan.fromFallback).toEqual({ a: "Alfa-stg", d: "Delta-stg" });
+    expect(plan.reuse).toEqual({ c: "Gama" });
+    expect(plan.missing).toEqual(["b"]);
+  });
+
+  it("does not use a fallback value that fails the token check, and reports it", () => {
+    const options = { fallback: { b: "Beta sin n", c: "Gama Deriv" }, protectedTerms: ["Deriv"] };
+    const missing = sync.planLocale(en, {}, options);
+    expect(missing.fromFallback).toEqual({ c: "Gama Deriv" });
+    expect(missing.missing).toEqual(["a", "b", "d"]);
+    expect(missing.rejectedFallback).toEqual([{ key: "b", english: "Beta {{n}}", reason: expect.stringMatching(/placeholders/) }]);
+    // In prefer mode a rejected fallback falls through to this environment's own value.
+    const prefer = sync.planLocale(en, { b: "Beta-prod {{n}}" }, { ...options, fallbackMode: "prefer" });
+    expect(prefer.reuse).toEqual({ b: "Beta-prod {{n}}" });
+    expect(prefer.rejectedFallback).toHaveLength(1);
+  });
+
+  it("applies an override over both this environment's value and the fallback", () => {
+    const plan = sync.planLocale(en, { a: "Alfa-prod" }, { fallback: { a: "Alfa-stg", b: "Beta-stg {{n}}" }, fallbackMode: "prefer", overrides: { a: "Alfa-fixed", c: "Gama-fixed" } });
+    expect(plan.overridden).toEqual({ a: "Alfa-fixed", c: "Gama-fixed" });
+    expect(plan.fromFallback).toEqual({ b: "Beta-stg {{n}}" });
+    expect(plan.reuse).toEqual({});
+    expect(plan.missing).toEqual(["d"]);
+  });
+
+  it("merges reused, fallback, overridden and new values into one catalogue and counts each", () => {
+    const plan = sync.planLocale(en, { a: "Alfa" }, { fallback: { b: "Beta-stg {{n}}" }, overrides: { c: "Gama-fixed" } });
+    const merged = sync.mergeLocale({ en, plan, translated: { d: "Delta-new" }, tokensByKey: { d: [] } });
+    expect(merged.catalogue).toEqual({ a: "Alfa", b: "Beta-stg {{n}}", c: "Gama-fixed", d: "Delta-new" });
+    expect(merged).toMatchObject({ reused: 1, fromFallback: 1, overridden: 1, added: 1, keptBack: [] });
+  });
+});
+
+describe("resolving the overrides file", () => {
+  const en = { k1: "1 Change", k2: "Edited {{time}} ago", k3: "Open Deriv" };
+  const locales = ["es", "fr", "zh_cn"];
+
+  it("maps English text to its key per targeted locale, whatever spelling of the locale code it uses", () => {
+    const out = sync.resolveOverrides(
+      { FR: { "1 Change": "1 modification" }, es: { "Edited {{time}} ago": "Editado hace {{time}}" }, "zh-CN": { "Open Deriv": "打开 Deriv" } },
+      { en, locales, protectedTerms: ["Deriv"] },
+    );
+    expect(out.byLocale).toEqual({ es: { k2: "Editado hace {{time}}" }, fr: { k1: "1 modification" }, zh_cn: { k3: "打开 Deriv" } });
+    expect(out.stale).toEqual([]);
+    expect(out.ignoredLocales).toEqual([]);
+  });
+
+  it("reports an entry whose English is no longer extracted, and a known locale this run does not target", () => {
+    const out = sync.resolveOverrides({ fr: { "Old wording": "Ancien" }, pt: { "1 Change": "1 alteração" } }, { en, locales });
+    expect(out.stale).toEqual([{ locale: "fr", english: "Old wording" }]);
+    expect(out.ignoredLocales).toEqual(["pt"]);
+    expect(out.byLocale.fr).toEqual({});
+  });
+
+  it("fails on a malformed file, an unknown locale, and every value that fails the token check", () => {
+    expect(() => sync.resolveOverrides([], { en, locales })).toThrow(/must be a JSON object/);
+    expect(() => sync.resolveOverrides({ sp: {} }, { en, locales })).toThrow(/Unknown locale "sp"/);
+    const run = () =>
+      sync.resolveOverrides(
+        { es: { "Edited {{time}} ago": "Editado hace poco", "Open Deriv": "Abrir Dériv" }, fr: ["not", "a map"] },
+        { en, locales, protectedTerms: ["Deriv"], file: "translations.overrides.json" },
+      );
+    expect(run).toThrow(/translations\.overrides\.json has 3 invalid entries/);
+    expect(run).toThrow(/es "Edited \{\{time\}\} ago": placeholders do not match/);
+    expect(run).toThrow(/es "Open Deriv": protected term "Deriv"/);
+    expect(run).toThrow(/"fr" must map English text/);
   });
 });
 
@@ -329,6 +485,18 @@ describe("configuration and summary", () => {
     expect(() => sync.readEnv({ ...baseEnv, ENVIRONMENT: "qa" })).toThrow(/ENVIRONMENT must be/);
   });
 
+  it("reads the fallback and overrides settings and rejects inconsistent ones", () => {
+    expect(sync.readEnv(baseEnv)).toMatchObject({ fallbackEnvironment: null, fallbackMode: "missing", overridesFile: null });
+    // The action passes an empty string for an input the caller left out.
+    expect(sync.readEnv({ ...baseEnv, FALLBACK_ENVIRONMENT: "", FALLBACK_MODE: "", OVERRIDES_FILE: "" })).toMatchObject({ fallbackEnvironment: null, fallbackMode: "missing" });
+    const prod = { ...baseEnv, ENVIRONMENT: "production", FALLBACK_ENVIRONMENT: " staging ", FALLBACK_MODE: "prefer", OVERRIDES_FILE: "o.json" };
+    expect(sync.readEnv(prod)).toMatchObject({ fallbackEnvironment: "staging", fallbackMode: "prefer", overridesFile: expect.stringMatching(/o\.json$/) });
+    expect(() => sync.readEnv({ ...baseEnv, FALLBACK_ENVIRONMENT: "staging" })).toThrow(/must differ from ENVIRONMENT/);
+    expect(() => sync.readEnv({ ...baseEnv, FALLBACK_ENVIRONMENT: "qa" })).toThrow(/FALLBACK_ENVIRONMENT must be/);
+    expect(() => sync.readEnv({ ...prod, FALLBACK_MODE: "always" })).toThrow(/FALLBACK_MODE must be/);
+    expect(() => sync.readEnv({ ...baseEnv, FALLBACK_MODE: "prefer" })).toThrow(/needs FALLBACK_ENVIRONMENT/);
+  });
+
   it("writes a summary table and lists kept-back strings", () => {
     const text = sync.buildSummary({
       project: "deriv-blox",
@@ -346,11 +514,38 @@ describe("configuration and summary", () => {
     expect(text).toContain("| es | 10 | 2 | 1 | 1 |");
     expect(text).toContain("`k9` — placeholders do not match the source");
     expect(text).toContain("**French**: boom");
+    expect(text).not.toContain("From ");
+    expect(text).not.toContain("Overridden");
+  });
+
+  it("adds fallback and override columns, rejected fallback values and unapplied overrides when they are used", () => {
+    const text = sync.buildSummary({
+      project: "deriv-api-v2",
+      environment: "production",
+      reference: "ref",
+      status: "completed",
+      perLocale: [
+        { locale: "fr", reused: 7, added: 1, pruned: 0, keptBack: [], fromFallback: 3, overridden: 2, rejectedFallback: [{ key: "k5", english: "Hi {{x}}", reason: "placeholders do not match the source" }] },
+      ],
+      makimaErrors: {},
+      dryRun: false,
+      fallbackEnvironment: "staging",
+      fallbackMode: "missing",
+      overrides: { byLocale: {}, stale: [{ locale: "fr", english: "Old wording" }], ignoredLocales: ["de"] },
+    });
+    expect(text).toContain("| Locale | Reused | New | Pruned | Kept back | From staging | Overridden | Note |");
+    expect(text).toContain("| fr | 7 | 1 | 0 | 0 | 3 | 2 |  |");
+    expect(text).toContain("keys production lacks are taken from **staging**");
+    expect(text).toContain("### staging values not used");
+    expect(text).toContain("`k5` — placeholders do not match the source");
+    expect(text).toContain('**fr** "Old wording" — this English text is no longer extracted');
+    expect(text).toContain("**de** — not in TARGET_LOCALES");
   });
 });
 
 describe("main(): end to end against a temp directory and a mocked gateway", () => {
   const { makeTempDir, writeJson, readJson, readText, join } = sync.testSupport;
+  const dirOf = () => makeTempDir("makima-overrides-");
 
   function setup(en: Record<string, string>, terms?: string[]) {
     const dir = makeTempDir();
@@ -405,7 +600,7 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
     expect(result.keptBackTotal).toBe(0);
     expect(readJson(join(dir, "translations", "es.json"))).toEqual({ a: "Alfa", b: "Abrir {{name}} en Deriv MCP", c: "Gama" }); // reused a, pruned "gone"
     expect(readJson(join(dir, "translations", "fr.json"))).toEqual({ a: "Alpha-fr", b: "Ouvrir {{name}} dans Deriv MCP", c: "Gamma-fr" });
-    expect(readText(join(dir, "output.txt"))).toBe("status=completed\nkept_back=0\ntranslated=3\n");
+    expect(readText(join(dir, "output.txt"))).toBe("status=completed\nkept_back=0\ntranslated=3\nfrom_fallback=0\noverridden=0\n");
     expect(readText(join(dir, "summary.md"))).toContain("| es | 1 | 2 | 1 | 0 |");
     expect(logs.join("\n")).not.toContain("secret");
   });
@@ -477,7 +672,7 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
     expect(result.status).toBe("noop");
     expect(posts).toBe(0);
     expect(readJson(join(dir, "translations", "es.json"))).toEqual({ a: "Alfa" });
-    expect(readText(join(dir, "output.txt"))).toBe("status=noop\nkept_back=0\ntranslated=0\n");
+    expect(readText(join(dir, "output.txt"))).toBe("status=noop\nkept_back=0\ntranslated=0\nfrom_fallback=0\noverridden=0\n");
   });
 
   it("rejects a protected-terms file that is not a JSON array of strings", async () => {
@@ -485,5 +680,93 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
     writeJson(join(dir, "terms.json"), { not: "an array" });
     env.PROTECTED_TERMS_FILE = join(dir, "terms.json");
     await expect(sync.main(env, { fetch: async () => jsonResponse(404, {}), sleep: noSleep, log: () => {} })).rejects.toThrow(/must be a JSON array of strings/);
+  });
+
+  describe("a production sync with staging as the fallback", () => {
+    const en = { a: "Alpha", b: "Beta", c: "Gamma {{n}}", d: "1 Change" };
+    const cdn: Record<string, Record<string, Record<string, string>>> = {
+      production: { es: { a: "Alfa-prod" }, fr: { a: "Alpha-prod" } },
+      staging: { es: { a: "Alfa-stg", b: "Beta-stg", c: "Gama sin n" }, fr: { a: "Alpha-stg", b: "Beta-stg-fr", c: "Gamma-fr {{n}}" } },
+    };
+
+    function productionSetup(extra: Env = {}) {
+      const { dir, env } = setup(en);
+      Object.assign(env, { ENVIRONMENT: "production", FALLBACK_ENVIRONMENT: "staging", REFERENCE: "proj/production/test" }, extra);
+      const cdnUrls: string[] = [];
+      const sent: string[][] = [];
+      const fetchImpl: FetchLike = async (url, init) => {
+        const hit = url.match(/^https:\/\/cdn\.test\/proj\/(\w+)\/translations\/(\w+)\.json$/);
+        if (hit) {
+          cdnUrls.push(url);
+          return jsonResponse(200, cdn[hit[1]][hit[2]]);
+        }
+        if (init?.method === "POST") {
+          sent.push(Object.keys((JSON.parse(String(init.body)) as { content: Record<string, string> }).content).sort());
+          return jsonResponse(202, { job_id: "job-p", status: "queued" });
+        }
+        return jsonResponse(200, {
+          status: "completed",
+          results: { Spanish: { c: "Gama {{n}}", d: "1 Cambio" }, French: { d: "1 Modifier" } },
+          errors: null,
+        });
+      };
+      return { dir, env, fetchImpl, cdnUrls, sent };
+    }
+
+    it("takes the keys production lacks from staging, checks them, and sends only the rest to Makima", async () => {
+      const { dir, env, fetchImpl, cdnUrls, sent } = productionSetup();
+      const logs: string[] = [];
+      const result = await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: (m) => logs.push(m) });
+      expect(cdnUrls).toEqual([
+        "https://cdn.test/proj/production/translations/es.json",
+        "https://cdn.test/proj/staging/translations/es.json",
+        "https://cdn.test/proj/production/translations/fr.json",
+        "https://cdn.test/proj/staging/translations/fr.json",
+      ]);
+      // es:c is on staging but lost its placeholder there, so Makima translates it.
+      expect(sent).toEqual([["c", "d"]]);
+      expect(readJson(join(dir, "translations", "es.json"))).toEqual({ a: "Alfa-prod", b: "Beta-stg", c: "Gama {{n}}", d: "1 Cambio" });
+      expect(readJson(join(dir, "translations", "fr.json"))).toEqual({ a: "Alpha-prod", b: "Beta-stg-fr", c: "Gamma-fr {{n}}", d: "1 Modifier" });
+      expect(result).toMatchObject({ status: "completed", fromFallbackTotal: 3, overriddenTotal: 0 });
+      expect(readText(join(dir, "output.txt"))).toBe("status=completed\nkept_back=0\ntranslated=2\nfrom_fallback=3\noverridden=0\n");
+      const summary = readText(join(dir, "summary.md"));
+      expect(summary).toContain("| es | 1 | 2 | 0 | 0 | 1 |  |");
+      expect(summary).toContain("| fr | 1 | 1 | 0 | 0 | 2 |  |");
+      expect(summary).toContain("`" + "c` — placeholders do not match the source");
+      expect(logs).toContain("es: 1 reused, 1 from staging, 2 to translate, 0 pruned");
+    });
+
+    it("prefer mode converges production on staging, and an override corrects a value in both", async () => {
+      const { dir, env, fetchImpl, sent } = productionSetup({ FALLBACK_MODE: "prefer", OVERRIDES_FILE: join(dirOf(), "overrides.json") });
+      writeJson(env.OVERRIDES_FILE as string, { fr: { "1 Change": "1 modification", "No longer in the source": "x" } });
+      const logs: string[] = [];
+      const result = await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: (m) => logs.push(m) });
+      // fr:d is overridden, so only es still needs c and d.
+      expect(sent).toEqual([["c", "d"]]);
+      expect(readJson(join(dir, "translations", "es.json"))).toEqual({ a: "Alfa-stg", b: "Beta-stg", c: "Gama {{n}}", d: "1 Cambio" });
+      expect(readJson(join(dir, "translations", "fr.json"))).toEqual({ a: "Alpha-stg", b: "Beta-stg-fr", c: "Gamma-fr {{n}}", d: "1 modification" });
+      expect(result).toMatchObject({ fromFallbackTotal: 5, overriddenTotal: 1 });
+      expect(readText(join(dir, "summary.md"))).toContain('**fr** "No longer in the source" — this English text is no longer extracted');
+      expect(logs.some((l) => l.startsWith("::warning::1 override(s)"))).toBe(true);
+    });
+
+    it("fails before calling Makima when an override breaks a placeholder", async () => {
+      const { env, fetchImpl, sent } = productionSetup({ OVERRIDES_FILE: join(dirOf(), "bad-overrides.json") });
+      writeJson(env.OVERRIDES_FILE as string, { es: { "Gamma {{n}}": "Gama" } });
+      await expect(sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: () => {} })).rejects.toThrow(/placeholders do not match/);
+      expect(sent).toEqual([]);
+    });
+
+    it("starts from an empty fallback when the staging catalogue does not exist", async () => {
+      const { dir, env } = productionSetup();
+      const fetchImpl: FetchLike = async (url, init) => {
+        if (url.includes("/staging/")) return new Response("not found", { status: 404 });
+        if (url.startsWith("https://cdn.test/")) return jsonResponse(200, { a: "A", b: "B", c: "C {{n}}", d: "D" });
+        throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+      };
+      const result = await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: () => {} });
+      expect(result).toMatchObject({ status: "noop", fromFallbackTotal: 0 });
+      expect(readJson(join(dir, "translations", "fr.json"))).toEqual({ a: "A", b: "B", c: "C {{n}}", d: "D" });
+    });
   });
 });

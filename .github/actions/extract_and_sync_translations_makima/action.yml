@@ -28,6 +28,18 @@ inputs:
     description: "Optional path (in the consumer repo) to a JSON array of terms that must never be translated, e.g. brand names"
     required: false
     default: ""
+  FALLBACK_ENVIRONMENT:
+    description: "Optional: staging or production, another environment whose CDN catalogue is consulted before Makima (e.g. staging for a production sync, so production takes the values QA reviewed instead of translating them again). Its values must pass the same token check as Makima's."
+    required: false
+    default: ""
+  FALLBACK_MODE:
+    description: "missing (default): use FALLBACK_ENVIRONMENT only for keys this environment lacks. prefer: its values also replace this environment's own, converging the two catalogues"
+    required: false
+    default: "missing"
+  OVERRIDES_FILE:
+    description: 'Optional path (in the consumer repo) to reviewed corrections, shaped {"<locale>": {"<English source text>": "<translation>"}}. Applied last, in every environment; an entry that fails the token check fails the run'
+    required: false
+    default: ""
   DRY_RUN:
     description: "true: write the catalogues as a workflow artifact and skip the R2 upload"
     required: false
@@ -51,6 +63,12 @@ outputs:
   kept_back:
     description: "Number of strings left out because a placeholder, marker or protected term did not survive translation"
     value: ${{ steps.sync.outputs.kept_back }}
+  from_fallback:
+    description: "Number of values taken from FALLBACK_ENVIRONMENT's catalogue (0 when it is not set)"
+    value: ${{ steps.sync.outputs.from_fallback }}
+  overridden:
+    description: "Number of values set from OVERRIDES_FILE (0 when it is not set)"
+    value: ${{ steps.sync.outputs.overridden }}
 runs:
   using: composite
   steps:
@@ -86,6 +104,9 @@ runs:
         MAKIMA_API_BASE: ${{ inputs.MAKIMA_API_BASE }}
         CDN_BASE_URL: ${{ inputs.CDN_BASE_URL }}
         PROTECTED_TERMS_FILE: ${{ inputs.PROTECTED_TERMS_FILE }}
+        FALLBACK_ENVIRONMENT: ${{ inputs.FALLBACK_ENVIRONMENT }}
+        FALLBACK_MODE: ${{ inputs.FALLBACK_MODE }}
+        OVERRIDES_FILE: ${{ inputs.OVERRIDES_FILE }}
         DRY_RUN: ${{ inputs.DRY_RUN }}
         TRANSLATIONS_DIR: translations
       # Node built-ins only, so it needs nothing installed.
