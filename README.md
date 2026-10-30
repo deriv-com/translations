@@ -238,7 +238,9 @@ How it keeps translations stable:
   ```
 
   Overrides win over every other source, in every environment that passes the
-  file. An entry that fails the token check fails the run; an entry whose
+  file. An entry that fails the token check fails the run, even when the run
+  does not target its locale, and so does a language named twice (`zh-CN` and
+  `zh_cn`); an entry whose
   English is no longer extracted (the string was reworded or removed) is
   skipped and listed in the job summary, so remove or update it.
 
@@ -261,10 +263,12 @@ The action takes the following inputs:
 - `OVERRIDES_FILE`: optional path to reviewed corrections, shaped `{"<locale>": {"<English text>": "<translation>"}}`.
 - `DRY_RUN`: `true` to write an artifact instead of uploading.
 
-It exposes four outputs: `status` (`noop`, `completed` or `partial`),
-`kept_back` (the number of strings left out by the token check),
-`from_fallback` (values taken from `FALLBACK_ENVIRONMENT`) and `overridden`
-(values set from `OVERRIDES_FILE`).
+It exposes four outputs: `status` (`noop` when the catalogues are unchanged,
+`completed` when new translations, the fallback, overrides or pruning changed
+them, or `partial`), `kept_back` (the number of strings left out by the token
+check), `from_fallback` (values taken from `FALLBACK_ENVIRONMENT`) and
+`overridden` (values `OVERRIDES_FILE` changed or added; an override already
+published counts as reused).
 
 Pin the action to a release commit by SHA (`…_makima@<sha> # v1.x.y`) rather
 than `@master`. Both actions run their scripts from their own commit, with

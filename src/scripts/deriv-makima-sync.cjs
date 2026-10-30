@@ -216,30 +216,18 @@ function restore(translated, tokens, sourceEnglish) {
   if (/\u0000|<\/?(?:ph|pt|c\d+)\b/.test(out)) {
     return { ok: false, text: out, reason: "a protected token was altered or lost" };
   }
-  const want = signature(sourceEnglish);
-  const got = signature(out);
-  if (want.placeholders.join("|") !== got.placeholders.join("|")) {
-    return { ok: false, text: out, reason: "placeholders do not match the source" };
-  }
-  if (want.markers !== got.markers) {
-    return { ok: false, text: out, reason: "component markers do not match the source" };
-  }
-  const expectedTerms = tokens.filter((t) => t.kind === "pt").map((t) => t.original);
-  const found = countTerms(out, expectedTerms);
-  for (const term of new Set(expectedTerms)) {
-    const wanted = expectedTerms.filter((t) => t === term).length;
-    if (found[term] !== wanted) {
-      return { ok: false, text: out, reason: `protected term "${term}" does not appear exactly as in the source` };
-    }
-  }
-  return { ok: true, text: out, reason: null };
+  const terms = tokens.filter((t) => t.kind === "pt").map((t) => t.original);
+  const check = checkTranslation(out, sourceEnglish, terms);
+  return { ok: check.ok, text: out, reason: check.reason };
 }
 
 /**
- * The same check `restore` makes, for a value that is already plain text: one
- * taken from another environment's catalogue or from the overrides file. It
- * must carry the source's placeholders and markers, and each protected term the
- * source contains exactly as often as the source does.
+ * Check a plain-text translation against its source: it must carry the
+ * source's placeholders and markers, and each protected term the source
+ * contains exactly as often as the source does. `restore` runs it once the
+ * tokens are back, and a value taken from another environment's catalogue or
+ * from the overrides file goes through it as is, so all three pass the same
+ * check.
  */
 function checkTranslation(text, sourceEnglish, protectedTerms = []) {
   if (typeof text !== "string" || text.trim() === "") {
@@ -274,7 +262,9 @@ const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
  * Split a locale's current catalogue against the extracted English.
  *
  * Each key in `en.json` takes the first value that applies:
- *   1. `overrides[key]`, a reviewed correction from the consumer's repo;
+ *   1. `overrides[key]`, a reviewed correction from the consumer's repo (one
+ *      equal to this environment's value is already published, so it counts as
+ *      reused, the way an equal fallback value does);
  *   2. with `fallbackMode: "missing"` (the default), the key's value in `prev`
  *      (this environment's CDN catalogue), else in `fallback` (another
  *      environment's, e.g. the staging catalogue QA reviewed);
@@ -293,11 +283,12 @@ function planLocale(en, prev, { fallback = {}, fallbackMode = "missing", overrid
   const overridden = {};
   const rejectedFallback = [];
   for (const key of Object.keys(en)) {
+    const own = has(prev, key) && typeof prev[key] === "string" ? prev[key] : undefined;
     if (has(overrides, key)) {
-      overridden[key] = overrides[key];
+      if (overrides[key] === own) reuse[key] = own;
+      else overridden[key] = overrides[key];
       continue;
     }
-    const own = has(prev, key) && typeof prev[key] === "string" ? prev[key] : undefined;
     let other;
     if (has(fallback, key) && (fallbackMode === "prefer" || own === undefined)) {
       const check = checkTranslation(fallback[key], en[key], protectedTerms);
@@ -368,11 +359,13 @@ function mergeLocale({ en, plan, translated, tokensByKey, failedKeys, failureMes
  * that adds one shows what it corrects; and a reworded string has a new key,
  * so its old override stops applying instead of silently landing on new text.
  *
- * Throws (failing the run) on a malformed file, an unknown locale code, or a
- * value that fails `checkTranslation`: the file is reviewed input, so a broken
- * entry must be fixed, not skipped. An entry whose English is no longer
- * extracted is reported in `stale`; a known locale this run does not target is
- * reported in `ignoredLocales`.
+ * Throws (failing the run) on a malformed file, an unknown locale code, two
+ * codes for the same language (e.g. "zh-CN" and "zh_cn"), or a value that fails
+ * `checkTranslation`: the file is reviewed input, so a broken entry must be
+ * fixed, not skipped. Values are checked in every locale the file names, so a
+ * broken entry fails every run, not only the one that targets its locale. An
+ * entry whose English is no longer extracted is reported in `stale`; a known
+ * locale this run does not target is reported in `ignoredLocales`.
  */
 function resolveOverrides(raw, { en, locales, protectedTerms = [], file = "the overrides file" }) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -382,24 +375,27 @@ function resolveOverrides(raw, { en, locales, protectedTerms = [], file = "the o
   // Matched by language, so "zh-CN" in the file reaches a run that targets "zh_cn".
   const targeted = new Map(locales.map((l) => [makimaNameFor(l), l]));
   const byLocale = Object.fromEntries(locales.map((l) => [l, {}]));
+  const codeByLanguage = new Map();
   const stale = [];
   const ignoredLocales = [];
   const problems = [];
   for (const [code, entries] of Object.entries(raw)) {
     const language = makimaNameFor(code); // throws on a typo'd locale code
+    if (codeByLanguage.has(language)) {
+      problems.push(`"${codeByLanguage.get(language)}" and "${code}" both name ${language}; merge them into one`);
+      continue;
+    }
+    codeByLanguage.set(language, code);
     if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
       problems.push(`"${code}" must map English text to a translation`);
       continue;
     }
     const locale = targeted.get(language);
-    if (!locale) {
-      ignoredLocales.push(code);
-      continue;
-    }
+    if (!locale) ignoredLocales.push(code);
     for (const [english, value] of Object.entries(entries)) {
       const key = keyByEnglish.get(english);
       if (key === undefined) {
-        stale.push({ locale, english });
+        if (locale) stale.push({ locale, english });
         continue;
       }
       const check = checkTranslation(value, english, protectedTerms);
@@ -407,7 +403,7 @@ function resolveOverrides(raw, { en, locales, protectedTerms = [], file = "the o
         problems.push(`${code} ${JSON.stringify(english)}: ${check.reason}`);
         continue;
       }
-      byLocale[locale][key] = value;
+      if (locale) byLocale[locale][key] = value;
     }
   }
   if (problems.length) {
@@ -606,17 +602,27 @@ async function translateContent({ content, targetNames, reference, fetchImpl, ba
 // Orchestration
 // ---------------------------------------------------------------------------
 
-async function fetchPrevious({ fetchImpl, cdnBase, project, environment, locale, log, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+/**
+ * Fetch a locale's catalogue from the CDN. `role` only changes the wording of
+ * the log and errors: "previous" is this environment's catalogue, "fallback"
+ * is FALLBACK_ENVIRONMENT's.
+ */
+async function fetchPrevious({ fetchImpl, cdnBase, project, environment, locale, log, role = "previous", sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const url = `${cdnBase.replace(/\/$/, "")}/${project}/${environment}/translations/${localeFileName(locale)}`;
+  const label = role === "fallback" ? `fallback (${environment})` : "previous";
   const res = await fetchWithRetry({ fetchImpl, sleep, url, init: { headers: { "Cache-Control": "no-cache" } } });
   if (res.status === 404) {
-    log(`No previous catalogue at ${url} (404) — starting ${locale} from empty`);
+    log(
+      role === "fallback"
+        ? `No fallback catalogue at ${url} (404) — ${locale} takes no values from ${environment}`
+        : `No previous catalogue at ${url} (404) — starting ${locale} from empty`
+    );
     return {};
   }
-  if (res.status !== 200) throw new Error(`Fetching the previous ${locale} catalogue failed: HTTP ${res.status} for ${url}`);
+  if (res.status !== 200) throw new Error(`Fetching the ${label} ${locale} catalogue failed: HTTP ${res.status} for ${url}`);
   const json = await readJson(res);
   if (!json || typeof json !== "object" || Array.isArray(json)) {
-    throw new Error(`Previous ${locale} catalogue at ${url} is not a JSON object`);
+    throw new Error(`The ${label} ${locale} catalogue at ${url} is not a JSON object`);
   }
   return json;
 }
@@ -767,10 +773,10 @@ async function main(env = process.env, io = {}) {
   const plans = {};
   const union = new Set();
   for (const locale of cfg.locales) {
-    const fetchCatalogue = (environment) =>
-      fetchPrevious({ fetchImpl, cdnBase: cfg.cdnBase, project: cfg.project, environment, locale, log, sleep });
-    const prev = await fetchCatalogue(cfg.environment);
-    const fallback = cfg.fallbackEnvironment ? await fetchCatalogue(cfg.fallbackEnvironment) : {};
+    const fetchCatalogue = (environment, role) =>
+      fetchPrevious({ fetchImpl, cdnBase: cfg.cdnBase, project: cfg.project, environment, locale, log, role, sleep });
+    const prev = await fetchCatalogue(cfg.environment, "previous");
+    const fallback = cfg.fallbackEnvironment ? await fetchCatalogue(cfg.fallbackEnvironment, "fallback") : {};
     plans[locale] = planLocale(en, prev, {
       fallback,
       fallbackMode: cfg.fallbackMode,
@@ -835,6 +841,10 @@ async function main(env = process.env, io = {}) {
   const keptBackTotal = perLocale.reduce((n, r) => n + r.keptBack.length, 0);
   const fromFallbackTotal = perLocale.reduce((n, r) => n + r.fromFallback, 0);
   const overriddenTotal = perLocale.reduce((n, r) => n + r.overridden, 0);
+  const prunedTotal = perLocale.reduce((n, r) => n + r.pruned, 0);
+  // `noop` means the uploaded catalogues equal the CDN's. With nothing to
+  // translate, the fallback, an override or pruning can still change them.
+  if (status === "noop" && fromFallbackTotal + overriddenTotal + prunedTotal > 0) status = "completed";
   const summary = buildSummary({
     project: cfg.project,
     environment: cfg.environment,

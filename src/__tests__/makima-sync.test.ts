@@ -301,6 +301,13 @@ describe("fallback environment and overrides in the plan", () => {
     expect(plan.missing).toEqual(["d"]);
   });
 
+  it("counts an override this environment already has as reused, and still lets it win over the fallback", () => {
+    const plan = sync.planLocale(en, { a: "Alfa", b: "Beta-prod {{n}}" }, { fallback: { a: "Alfa-stg" }, fallbackMode: "prefer", overrides: { a: "Alfa", b: "Beta-fixed {{n}}" } });
+    expect(plan.reuse).toEqual({ a: "Alfa" });
+    expect(plan.overridden).toEqual({ b: "Beta-fixed {{n}}" });
+    expect(plan.fromFallback).toEqual({});
+  });
+
   it("merges reused, fallback, overridden and new values into one catalogue and counts each", () => {
     const plan = sync.planLocale(en, { a: "Alfa" }, { fallback: { b: "Beta-stg {{n}}" }, overrides: { c: "Gama-fixed" } });
     const merged = sync.mergeLocale({ en, plan, translated: { d: "Delta-new" }, tokensByKey: { d: [] } });
@@ -342,6 +349,16 @@ describe("resolving the overrides file", () => {
     expect(run).toThrow(/es "Edited \{\{time\}\} ago": placeholders do not match/);
     expect(run).toThrow(/es "Open Deriv": protected term "Deriv"/);
     expect(run).toThrow(/"fr" must map English text/);
+  });
+
+  it("checks the entries of a locale this run does not target", () => {
+    const run = () => sync.resolveOverrides({ pt: { "Edited {{time}} ago": "Editado há pouco" } }, { en, locales });
+    expect(run).toThrow(/pt "Edited \{\{time\}\} ago": placeholders do not match/);
+  });
+
+  it("fails when two codes in the file name the same language", () => {
+    const run = () => sync.resolveOverrides({ "zh-CN": { "1 Change": "1 个更改" }, zh_cn: { "1 Change": "1 处更改" } }, { en, locales });
+    expect(run).toThrow(/"zh-CN" and "zh_cn" both name Simplified Chinese/);
   });
 });
 
@@ -675,6 +692,35 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
     expect(readText(join(dir, "output.txt"))).toBe("status=noop\nkept_back=0\ntranslated=0\nfrom_fallback=0\noverridden=0\n");
   });
 
+  it("reports completed, not noop, when pruning, the fallback or an override changes a catalogue with nothing to translate", async () => {
+    const en = { a: "Alpha" };
+    const run = async ({ es, staging, overrides }: { es: Record<string, string>; staging?: Record<string, string>; overrides?: unknown }) => {
+      const { dir, env } = setup(en);
+      env.TARGET_LOCALES = "es";
+      if (staging) Object.assign(env, { ENVIRONMENT: "production", FALLBACK_ENVIRONMENT: "staging" });
+      if (overrides) {
+        env.OVERRIDES_FILE = join(dir, "overrides.json");
+        writeJson(env.OVERRIDES_FILE, overrides);
+      }
+      let posts = 0;
+      const fetchImpl: FetchLike = async (url, init) => {
+        if (init?.method === "POST") posts += 1;
+        return jsonResponse(200, staging && url.includes("/staging/") ? staging : es);
+      };
+      const result = await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: () => {} });
+      expect(posts).toBe(0);
+      return { ...result, output: readText(join(dir, "output.txt")) };
+    };
+    expect(await run({ es: { a: "Alfa", gone: "Pruned" } })).toMatchObject({ status: "completed" });
+    expect(await run({ es: {}, staging: { a: "Alfa" } })).toMatchObject({
+      status: "completed",
+      output: "status=completed\nkept_back=0\ntranslated=0\nfrom_fallback=1\noverridden=0\n",
+    });
+    expect(await run({ es: { a: "Alfa" }, overrides: { es: { Alpha: "Alfa corregido" } } })).toMatchObject({ status: "completed", overriddenTotal: 1 });
+    // An override that is already published changes nothing.
+    expect(await run({ es: { a: "Alfa" }, overrides: { es: { Alpha: "Alfa" } } })).toMatchObject({ status: "noop", overriddenTotal: 0 });
+  });
+
   it("rejects a protected-terms file that is not a JSON array of strings", async () => {
     const { dir, env } = setup({ a: "Alpha" });
     writeJson(join(dir, "terms.json"), { not: "an array" });
@@ -764,9 +810,21 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
         if (url.startsWith("https://cdn.test/")) return jsonResponse(200, { a: "A", b: "B", c: "C {{n}}", d: "D" });
         throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
       };
-      const result = await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: () => {} });
+      const logs: string[] = [];
+      const result = await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: (m) => logs.push(m) });
       expect(result).toMatchObject({ status: "noop", fromFallbackTotal: 0 });
       expect(readJson(join(dir, "translations", "fr.json"))).toEqual({ a: "A", b: "B", c: "C {{n}}", d: "D" });
+      expect(logs).toContain("No fallback catalogue at https://cdn.test/proj/staging/translations/es.json (404) — es takes no values from staging");
+      expect(logs.some((l) => l.startsWith("No previous catalogue"))).toBe(false);
+    });
+
+    it("names the fallback catalogue when fetching it fails", async () => {
+      const { env } = productionSetup();
+      const fetchImpl: FetchLike = async (url) =>
+        url.includes("/staging/") ? new Response("upstream", { status: 503 }) : jsonResponse(200, { a: "A" });
+      await expect(sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: () => {} })).rejects.toThrow(
+        "Fetching the fallback (staging) es catalogue failed: HTTP 503 for https://cdn.test/proj/staging/translations/es.json",
+      );
     });
   });
 });

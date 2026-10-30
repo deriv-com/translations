@@ -58,7 +58,7 @@ inputs:
     required: true
 outputs:
   status:
-    description: "noop (nothing new), completed, or partial (a language failed; its file was left as the CDN had it)"
+    description: "noop (the catalogues are unchanged), completed (new translations, or values changed by the fallback, overrides or pruning), or partial (a language failed; its file was left as the CDN had it)"
     value: ${{ steps.sync.outputs.status }}
   kept_back:
     description: "Number of strings left out because a placeholder, marker or protected term did not survive translation"
@@ -67,7 +67,7 @@ outputs:
     description: "Number of values taken from FALLBACK_ENVIRONMENT's catalogue (0 when it is not set)"
     value: ${{ steps.sync.outputs.from_fallback }}
   overridden:
-    description: "Number of values set from OVERRIDES_FILE (0 when it is not set)"
+    description: "Number of values OVERRIDES_FILE changed or added (0 when it is not set; an override already published counts as reused)"
     value: ${{ steps.sync.outputs.overridden }}
 runs:
   using: composite
