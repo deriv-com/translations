@@ -16,6 +16,14 @@
  * not have are sent to Makima. Because keys are the crc32 of the English text,
  * a reworded string is simply a new key.
  *
+ * Two optional sources come before Makima (see `planLocale`):
+ *   - FALLBACK_ENVIRONMENT: another environment's CDN catalogue, so production
+ *     takes the value QA reviewed on staging instead of translating the key a
+ *     second time. FALLBACK_MODE "missing" (default) uses it only for keys this
+ *     environment lacks; "prefer" lets it win over this environment's own value.
+ *   - OVERRIDES_FILE: reviewed corrections committed in the consumer's repo,
+ *     applied last in every environment (see `resolveOverrides`).
+ *
  * Placeholders (`{{name}}`), i18next component markers (`<0>…</0>`) and
  * caller-supplied protected terms (brand and product names) are swapped for
  * HTML tokens Makima preserves, restored afterwards, and verified to appear
@@ -26,7 +34,8 @@
  * Environment (the composite action maps its inputs onto these):
  *   PROJECT_NAME, ENVIRONMENT (staging|production), TARGET_LOCALES (e.g.
  *   "es,fr,pt"), MAKIMA_API_KEY, MAKIMA_API_BASE, CDN_BASE_URL, DRY_RUN,
- *   PROTECTED_TERMS_FILE (optional JSON array of strings), TRANSLATIONS_DIR
+ *   PROTECTED_TERMS_FILE (optional JSON array of strings), FALLBACK_ENVIRONMENT,
+ *   FALLBACK_MODE, OVERRIDES_FILE (all optional), TRANSLATIONS_DIR
  *   (default ./translations), REFERENCE (default "<project>/<env>/<GITHUB_SHA>").
  *
  * The API key is read from the environment and never written to any log.
@@ -207,42 +216,95 @@ function restore(translated, tokens, sourceEnglish) {
   if (/\u0000|<\/?(?:ph|pt|c\d+)\b/.test(out)) {
     return { ok: false, text: out, reason: "a protected token was altered or lost" };
   }
+  const terms = tokens.filter((t) => t.kind === "pt").map((t) => t.original);
+  const check = checkTranslation(out, sourceEnglish, terms);
+  return { ok: check.ok, text: out, reason: check.reason };
+}
+
+/**
+ * Check a plain-text translation against its source: it must carry the
+ * source's placeholders and markers, and each protected term the source
+ * contains exactly as often as the source does. `restore` runs it once the
+ * tokens are back, and a value taken from another environment's catalogue or
+ * from the overrides file goes through it as is, so all three pass the same
+ * check.
+ */
+function checkTranslation(text, sourceEnglish, protectedTerms = []) {
+  if (typeof text !== "string" || text.trim() === "") {
+    return { ok: false, reason: "the value is not a non-empty string" };
+  }
   const want = signature(sourceEnglish);
-  const got = signature(out);
+  const got = signature(text);
   if (want.placeholders.join("|") !== got.placeholders.join("|")) {
-    return { ok: false, text: out, reason: "placeholders do not match the source" };
+    return { ok: false, reason: "placeholders do not match the source" };
   }
   if (want.markers !== got.markers) {
-    return { ok: false, text: out, reason: "component markers do not match the source" };
+    return { ok: false, reason: "component markers do not match the source" };
   }
-  const expectedTerms = tokens.filter((t) => t.kind === "pt").map((t) => t.original);
-  const found = countTerms(out, expectedTerms);
-  for (const term of new Set(expectedTerms)) {
-    const wanted = expectedTerms.filter((t) => t === term).length;
-    if (found[term] !== wanted) {
-      return { ok: false, text: out, reason: `protected term "${term}" does not appear exactly as in the source` };
+  const terms = [...new Set(protectedTerms.filter(Boolean))];
+  const expected = countTerms(sourceEnglish, terms);
+  const found = countTerms(text, terms);
+  for (const term of terms) {
+    if (expected[term] > 0 && found[term] !== expected[term]) {
+      return { ok: false, reason: `protected term "${term}" does not appear exactly as in the source` };
     }
   }
-  return { ok: true, text: out, reason: null };
+  return { ok: true, reason: null };
 }
 
 // ---------------------------------------------------------------------------
 // Delta and merge
 // ---------------------------------------------------------------------------
 
-/** Split a locale's current catalogue against the extracted English. */
-function planLocale(en, prev) {
+const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+/**
+ * Split a locale's current catalogue against the extracted English.
+ *
+ * Each key in `en.json` takes the first value that applies:
+ *   1. `overrides[key]`, a reviewed correction from the consumer's repo (one
+ *      equal to this environment's value is already published, so it counts as
+ *      reused, the way an equal fallback value does);
+ *   2. with `fallbackMode: "missing"` (the default), the key's value in `prev`
+ *      (this environment's CDN catalogue), else in `fallback` (another
+ *      environment's, e.g. the staging catalogue QA reviewed);
+ *      with `fallbackMode: "prefer"`, `fallback` first and `prev` second;
+ *   3. otherwise the key is missing and goes to Makima.
+ * A fallback value is used only if it passes `checkTranslation`; one that does
+ * not is reported in `rejectedFallback` and the key carries on to `prev` or
+ * Makima. Keys are the crc32 of the English text, so an equal key in another
+ * environment means an equal source. Keys of `prev` that are no longer in
+ * `en.json` are pruned; keys only the fallback has are never added.
+ */
+function planLocale(en, prev, { fallback = {}, fallbackMode = "missing", overrides = {}, protectedTerms = [] } = {}) {
   const missing = [];
   const reuse = {};
+  const fromFallback = {};
+  const overridden = {};
+  const rejectedFallback = [];
   for (const key of Object.keys(en)) {
-    if (Object.prototype.hasOwnProperty.call(prev, key) && typeof prev[key] === "string") {
-      reuse[key] = prev[key];
+    const own = has(prev, key) && typeof prev[key] === "string" ? prev[key] : undefined;
+    if (has(overrides, key)) {
+      if (overrides[key] === own) reuse[key] = own;
+      else overridden[key] = overrides[key];
+      continue;
+    }
+    let other;
+    if (has(fallback, key) && (fallbackMode === "prefer" || own === undefined)) {
+      const check = checkTranslation(fallback[key], en[key], protectedTerms);
+      if (check.ok) other = fallback[key];
+      else rejectedFallback.push({ key, english: en[key], reason: check.reason });
+    }
+    if (other !== undefined && other !== own) {
+      fromFallback[key] = other;
+    } else if (own !== undefined) {
+      reuse[key] = own;
     } else {
       missing.push(key);
     }
   }
-  const pruned = Object.keys(prev).filter((k) => !Object.prototype.hasOwnProperty.call(en, k));
-  return { reuse, missing, pruned };
+  const pruned = Object.keys(prev).filter((k) => !has(en, k));
+  return { reuse, fromFallback, overridden, missing, pruned, rejectedFallback };
 }
 
 /**
@@ -251,7 +313,9 @@ function planLocale(en, prev) {
  * left out (runtime falls back to English; the next run retries it).
  */
 function mergeLocale({ en, plan, translated, tokensByKey, failedKeys, failureMessage }) {
-  const catalogue = { ...plan.reuse };
+  const fromFallback = plan.fromFallback || {};
+  const overridden = plan.overridden || {};
+  const catalogue = { ...plan.reuse, ...fromFallback, ...overridden };
   const keptBack = [];
   let added = 0;
   for (const key of plan.missing) {
@@ -272,7 +336,80 @@ function mergeLocale({ en, plan, translated, tokensByKey, failedKeys, failureMes
     catalogue[key] = result.text;
     added += 1;
   }
-  return { catalogue, keptBack, added, reused: Object.keys(plan.reuse).length, pruned: plan.pruned.length };
+  return {
+    catalogue,
+    keptBack,
+    added,
+    reused: Object.keys(plan.reuse).length,
+    fromFallback: Object.keys(fromFallback).length,
+    overridden: Object.keys(overridden).length,
+    pruned: plan.pruned.length,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Overrides
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate the consumer's overrides file and resolve it to catalogue keys.
+ *
+ * The file is `{ "<locale>": { "<English source text>": "<translation>" } }`.
+ * Entries are keyed by the English text, not the crc32 key, so a pull request
+ * that adds one shows what it corrects; and a reworded string has a new key,
+ * so its old override stops applying instead of silently landing on new text.
+ *
+ * Throws (failing the run) on a malformed file, an unknown locale code, two
+ * codes for the same language (e.g. "zh-CN" and "zh_cn"), or a value that fails
+ * `checkTranslation`: the file is reviewed input, so a broken entry must be
+ * fixed, not skipped. Values are checked in every locale the file names, so a
+ * broken entry fails every run, not only the one that targets its locale. An
+ * entry whose English is no longer extracted is reported in `stale`; a known
+ * locale this run does not target is reported in `ignoredLocales`.
+ */
+function resolveOverrides(raw, { en, locales, protectedTerms = [], file = "the overrides file" }) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`${file} must be a JSON object of { "<locale>": { "<English text>": "<translation>" } }`);
+  }
+  const keyByEnglish = new Map(Object.entries(en).map(([key, english]) => [english, key]));
+  // Matched by language, so "zh-CN" in the file reaches a run that targets "zh_cn".
+  const targeted = new Map(locales.map((l) => [makimaNameFor(l), l]));
+  const byLocale = Object.fromEntries(locales.map((l) => [l, {}]));
+  const codeByLanguage = new Map();
+  const stale = [];
+  const ignoredLocales = [];
+  const problems = [];
+  for (const [code, entries] of Object.entries(raw)) {
+    const language = makimaNameFor(code); // throws on a typo'd locale code
+    if (codeByLanguage.has(language)) {
+      problems.push(`"${codeByLanguage.get(language)}" and "${code}" both name ${language}; merge them into one`);
+      continue;
+    }
+    codeByLanguage.set(language, code);
+    if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
+      problems.push(`"${code}" must map English text to a translation`);
+      continue;
+    }
+    const locale = targeted.get(language);
+    if (!locale) ignoredLocales.push(code);
+    for (const [english, value] of Object.entries(entries)) {
+      const key = keyByEnglish.get(english);
+      if (key === undefined) {
+        if (locale) stale.push({ locale, english });
+        continue;
+      }
+      const check = checkTranslation(value, english, protectedTerms);
+      if (!check.ok) {
+        problems.push(`${code} ${JSON.stringify(english)}: ${check.reason}`);
+        continue;
+      }
+      if (locale) byLocale[locale][key] = value;
+    }
+  }
+  if (problems.length) {
+    throw new Error(`${file} has ${problems.length} invalid entr${problems.length === 1 ? "y" : "ies"}:\n- ${problems.join("\n- ")}`);
+  }
+  return { byLocale, stale, ignoredLocales };
 }
 
 // ---------------------------------------------------------------------------
@@ -465,31 +602,70 @@ async function translateContent({ content, targetNames, reference, fetchImpl, ba
 // Orchestration
 // ---------------------------------------------------------------------------
 
-async function fetchPrevious({ fetchImpl, cdnBase, project, environment, locale, log, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+/**
+ * Fetch a locale's catalogue from the CDN. `role` only changes the wording of
+ * the log and errors: "previous" is this environment's catalogue, "fallback"
+ * is FALLBACK_ENVIRONMENT's.
+ */
+async function fetchPrevious({ fetchImpl, cdnBase, project, environment, locale, log, role = "previous", sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const url = `${cdnBase.replace(/\/$/, "")}/${project}/${environment}/translations/${localeFileName(locale)}`;
+  const label = role === "fallback" ? `fallback (${environment})` : "previous";
   const res = await fetchWithRetry({ fetchImpl, sleep, url, init: { headers: { "Cache-Control": "no-cache" } } });
   if (res.status === 404) {
-    log(`No previous catalogue at ${url} (404) — starting ${locale} from empty`);
+    log(
+      role === "fallback"
+        ? `No fallback catalogue at ${url} (404) — ${locale} takes no values from ${environment}`
+        : `No previous catalogue at ${url} (404) — starting ${locale} from empty`
+    );
     return {};
   }
-  if (res.status !== 200) throw new Error(`Fetching the previous ${locale} catalogue failed: HTTP ${res.status} for ${url}`);
+  if (res.status !== 200) throw new Error(`Fetching the ${label} ${locale} catalogue failed: HTTP ${res.status} for ${url}`);
   const json = await readJson(res);
   if (!json || typeof json !== "object" || Array.isArray(json)) {
-    throw new Error(`Previous ${locale} catalogue at ${url} is not a JSON object`);
+    throw new Error(`The ${label} ${locale} catalogue at ${url} is not a JSON object`);
   }
   return json;
 }
 
-function buildSummary({ project, environment, reference, status, perLocale, makimaErrors, dryRun }) {
+function buildSummary({ project, environment, reference, status, perLocale, makimaErrors, dryRun, fallbackEnvironment, fallbackMode, overrides }) {
   const lines = [];
   lines.push(`## Makima translation sync — ${project} / ${environment}${dryRun ? " (dry run)" : ""}`);
   lines.push("");
   lines.push(`Reference: \`${reference}\` · Job status: **${status}**`);
+  if (fallbackEnvironment) {
+    lines.push("");
+    lines.push(
+      fallbackMode === "prefer"
+        ? `Fallback: **${fallbackEnvironment}** values win over ${environment}'s own; "From ${fallbackEnvironment}" counts the values that changed or were missing.`
+        : `Fallback: keys ${environment} lacks are taken from **${fallbackEnvironment}** before Makima is asked.`
+    );
+  }
+  // The extra columns sit after "Kept back" so existing readers of the table keep their positions.
+  const extraHeads = [...(fallbackEnvironment ? [`From ${fallbackEnvironment}`] : []), ...(overrides ? ["Overridden"] : [])];
   lines.push("");
-  lines.push("| Locale | Reused | New | Pruned | Kept back | Note |");
-  lines.push("| --- | ---: | ---: | ---: | ---: | --- |");
+  lines.push(`| Locale | Reused | New | Pruned | Kept back | ${extraHeads.map((h) => `${h} | `).join("")}Note |`);
+  lines.push(`| --- | ---: | ---: | ---: | ---: | ${extraHeads.map(() => "---: | ").join("")}--- |`);
   for (const row of perLocale) {
-    lines.push(`| ${row.locale} | ${row.reused} | ${row.added} | ${row.pruned} | ${row.keptBack.length} | ${row.note || ""} |`);
+    const extra = [...(fallbackEnvironment ? [row.fromFallback || 0] : []), ...(overrides ? [row.overridden || 0] : [])];
+    lines.push(`| ${row.locale} | ${row.reused} | ${row.added} | ${row.pruned} | ${row.keptBack.length} | ${extra.map((n) => `${n} | `).join("")}${row.note || ""} |`);
+  }
+  const rejected = perLocale.flatMap((r) => (r.rejectedFallback || []).map((k) => ({ locale: r.locale, ...k })));
+  if (rejected.length) {
+    lines.push("");
+    lines.push(`### ${fallbackEnvironment} values not used (failed the token check; ${environment}'s own value or Makima used instead)`);
+    for (const k of rejected) {
+      lines.push(`- **${k.locale}** \`${k.key}\` — ${k.reason}: ${JSON.stringify(k.english)}`);
+    }
+  }
+  if (overrides && (overrides.stale.length || overrides.ignoredLocales.length)) {
+    lines.push("");
+    lines.push("### Overrides not applied");
+    for (const s of overrides.stale) {
+      lines.push(`- **${s.locale}** ${JSON.stringify(s.english)} — this English text is no longer extracted; update or remove the entry`);
+    }
+    for (const code of overrides.ignoredLocales) {
+      lines.push(`- **${code}** — not in TARGET_LOCALES for this run`);
+    }
   }
   const kept = perLocale.flatMap((r) => r.keptBack.map((k) => ({ locale: r.locale, ...k })));
   if (kept.length) {
@@ -520,9 +696,24 @@ function readEnv(env) {
   for (const name of required) {
     if (!env[name] || !String(env[name]).trim()) throw new Error(`${name} is required`);
   }
+  const environments = ["staging", "production"];
   const environment = String(env.ENVIRONMENT).trim();
-  if (!["staging", "production"].includes(environment)) {
+  if (!environments.includes(environment)) {
     throw new Error(`ENVIRONMENT must be "staging" or "production", got "${environment}"`);
+  }
+  const fallbackEnvironment = String(env.FALLBACK_ENVIRONMENT || "").trim() || null;
+  if (fallbackEnvironment && !environments.includes(fallbackEnvironment)) {
+    throw new Error(`FALLBACK_ENVIRONMENT must be "staging", "production" or empty, got "${fallbackEnvironment}"`);
+  }
+  if (fallbackEnvironment === environment) {
+    throw new Error(`FALLBACK_ENVIRONMENT must differ from ENVIRONMENT (both are "${environment}")`);
+  }
+  const fallbackMode = String(env.FALLBACK_MODE || "").trim() || "missing";
+  if (!["missing", "prefer"].includes(fallbackMode)) {
+    throw new Error(`FALLBACK_MODE must be "missing" or "prefer", got "${fallbackMode}"`);
+  }
+  if (fallbackMode === "prefer" && !fallbackEnvironment) {
+    throw new Error('FALLBACK_MODE "prefer" needs FALLBACK_ENVIRONMENT');
   }
   const locales = String(env.TARGET_LOCALES)
     .split(",")
@@ -540,6 +731,9 @@ function readEnv(env) {
     dryRun: /^(1|true|yes)$/i.test(String(env.DRY_RUN || "")),
     translationsDir: path.resolve(env.TRANSLATIONS_DIR || "./translations"),
     protectedTermsFile: env.PROTECTED_TERMS_FILE ? path.resolve(env.PROTECTED_TERMS_FILE) : null,
+    fallbackEnvironment,
+    fallbackMode,
+    overridesFile: env.OVERRIDES_FILE ? path.resolve(env.OVERRIDES_FILE) : null,
     reference: env.REFERENCE || `${project}/${environment}/${env.GITHUB_SHA || "local"}`,
     outputFile: env.GITHUB_OUTPUT || null,
     summaryFile: env.GITHUB_STEP_SUMMARY || null,
@@ -570,15 +764,33 @@ async function main(env = process.env, io = {}) {
   const en = JSON.parse(fs.readFileSync(enPath, "utf8"));
   const protectedTerms = loadProtectedTerms(cfg.protectedTermsFile);
   const targetNames = cfg.locales.map(makimaNameFor);
+  const overrides = cfg.overridesFile
+    ? resolveOverrides(JSON.parse(fs.readFileSync(cfg.overridesFile, "utf8")), { en, locales: cfg.locales, protectedTerms, file: cfg.overridesFile })
+    : null;
 
-  // Plan every locale against its current CDN copy.
+  // Plan every locale against its current CDN copy, the fallback environment's
+  // copy and the overrides.
   const plans = {};
   const union = new Set();
   for (const locale of cfg.locales) {
-    const prev = await fetchPrevious({ fetchImpl, cdnBase: cfg.cdnBase, project: cfg.project, environment: cfg.environment, locale, log, sleep });
-    plans[locale] = planLocale(en, prev);
+    const fetchCatalogue = (environment, role) =>
+      fetchPrevious({ fetchImpl, cdnBase: cfg.cdnBase, project: cfg.project, environment, locale, log, role, sleep });
+    const prev = await fetchCatalogue(cfg.environment, "previous");
+    const fallback = cfg.fallbackEnvironment ? await fetchCatalogue(cfg.fallbackEnvironment, "fallback") : {};
+    plans[locale] = planLocale(en, prev, {
+      fallback,
+      fallbackMode: cfg.fallbackMode,
+      overrides: overrides ? overrides.byLocale[locale] : {},
+      protectedTerms,
+    });
     plans[locale].missing.forEach((k) => union.add(k));
-    log(`${locale}: ${Object.keys(plans[locale].reuse).length} reused, ${plans[locale].missing.length} to translate, ${plans[locale].pruned.length} pruned`);
+    const p = plans[locale];
+    log(
+      `${locale}: ${Object.keys(p.reuse).length} reused` +
+        (cfg.fallbackEnvironment ? `, ${Object.keys(p.fromFallback).length} from ${cfg.fallbackEnvironment}` : "") +
+        (overrides ? `, ${Object.keys(p.overridden).length} overridden` : "") +
+        `, ${p.missing.length} to translate, ${p.pruned.length} pruned`
+    );
   }
 
   // Protect and translate the union of missing keys once for all languages.
@@ -601,7 +813,7 @@ async function main(env = process.env, io = {}) {
     makimaErrors = out.errors;
     failedKeys = out.failedKeys;
   } else {
-    log("Nothing new to translate — every key is already on the CDN");
+    log("Nothing new to translate — every key already has a value");
   }
 
   // Merge and write per locale. A key whose chunk failed, or that came back
@@ -623,18 +835,42 @@ async function main(env = process.env, io = {}) {
     });
     fs.writeFileSync(path.join(cfg.translationsDir, localeFileName(locale)), JSON.stringify(merged.catalogue));
     const note = makimaErrors[languageName] ? "Makima failed this language for some or all chunks; those keys are left out and retried next run" : "";
-    perLocale.push({ locale, ...merged, note });
+    perLocale.push({ locale, ...merged, rejectedFallback: plan.rejectedFallback, note });
   }
 
   const keptBackTotal = perLocale.reduce((n, r) => n + r.keptBack.length, 0);
-  const summary = buildSummary({ project: cfg.project, environment: cfg.environment, reference: cfg.reference, status, perLocale, makimaErrors, dryRun: cfg.dryRun });
+  const fromFallbackTotal = perLocale.reduce((n, r) => n + r.fromFallback, 0);
+  const overriddenTotal = perLocale.reduce((n, r) => n + r.overridden, 0);
+  const prunedTotal = perLocale.reduce((n, r) => n + r.pruned, 0);
+  // `noop` means the uploaded catalogues equal the CDN's. With nothing to
+  // translate, the fallback, an override or pruning can still change them.
+  if (status === "noop" && fromFallbackTotal + overriddenTotal + prunedTotal > 0) status = "completed";
+  const summary = buildSummary({
+    project: cfg.project,
+    environment: cfg.environment,
+    reference: cfg.reference,
+    status,
+    perLocale,
+    makimaErrors,
+    dryRun: cfg.dryRun,
+    fallbackEnvironment: cfg.fallbackEnvironment,
+    fallbackMode: cfg.fallbackMode,
+    overrides,
+  });
   log(summary);
   if (cfg.summaryFile) fs.appendFileSync(cfg.summaryFile, `${summary}\n`);
   // Surface problems as workflow annotations, not only in the summary table.
   if (status === "partial") log(`::warning::Makima returned a partial result for ${cfg.project}/${cfg.environment}: ${Object.keys(makimaErrors).join(", ")} — see the job summary`);
   if (keptBackTotal > 0) log(`::warning::${keptBackTotal} string(s) were kept out of the ${cfg.project}/${cfg.environment} catalogues because a placeholder, marker or protected term did not survive translation — see the job summary`);
-  appendOutput(cfg.outputFile, [`status=${status}`, `kept_back=${keptBackTotal}`, `translated=${union.size}`]);
-  return { status, perLocale, keptBackTotal };
+  if (overrides && overrides.stale.length) log(`::warning::${overrides.stale.length} override(s) in ${cfg.overridesFile} name English text that is no longer extracted — see the job summary`);
+  appendOutput(cfg.outputFile, [
+    `status=${status}`,
+    `kept_back=${keptBackTotal}`,
+    `translated=${union.size}`,
+    `from_fallback=${fromFallbackTotal}`,
+    `overridden=${overriddenTotal}`,
+  ]);
+  return { status, perLocale, keptBackTotal, fromFallbackTotal, overriddenTotal };
 }
 
 /** Small file helpers for tests; the test runner has no Node type definitions. */
@@ -661,8 +897,10 @@ module.exports = {
   localeFileName,
   protect,
   restore,
+  checkTranslation,
   planLocale,
   mergeLocale,
+  resolveOverrides,
   chunkContent,
   retryDelayMs,
   submitJob,
