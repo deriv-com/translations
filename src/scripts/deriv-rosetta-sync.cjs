@@ -475,8 +475,8 @@ function retryDelayMs(res, attempt, cap = 30000) {
   return Math.min(3000 * 2 ** attempt, cap);
 }
 
-async function readJson(res) {
-  const text = await res.text();
+/** Parse a response body: JSON when it is JSON, otherwise `{ raw: text }`. */
+function parseBody(text) {
   try {
     return text ? JSON.parse(text) : {};
   } catch {
@@ -484,29 +484,32 @@ async function readJson(res) {
   }
 }
 
+async function readJson(res) {
+  return parseBody(await res.text());
+}
+
+const headerOf = (res, name) => (res && res.headers && typeof res.headers.get === "function" ? res.headers.get(name) : null);
+
 /**
  * The error for an unexpected response. Cloudflare in front of the API answers
- * a request from a network that is not on its allow-list with an HTML block
+ * a request from a network that is not on its allow-list with a 403 HTML block
  * page; report that in one line, with the Ray ID, instead of dumping the page
- * into the log. Any other non-JSON body is cut short.
+ * into the log. Any other response (an outage page, a wrong host) keeps its
+ * status, with the Ray ID when there is one, and a non-JSON body is cut short.
  */
 async function httpFailure(res, what) {
   const text = await res.text().catch(() => "");
-  const html = /text\/html/i.test(res.headers.get("content-type") || "");
-  const rayHeader = res.headers.get("cf-ray");
-  if (html && (rayHeader || /cloudflare/i.test(text))) {
-    const rayId = rayHeader ? rayHeader.split("-")[0] : (text.match(/Ray ID:?\s*(?:<[^>]*>\s*)*([0-9a-f]{16})/i) || [])[1];
+  const html = /text\/html/i.test(headerOf(res, "content-type") || "");
+  const rayHeader = headerOf(res, "cf-ray");
+  const rayId = rayHeader ? rayHeader.split("-")[0] : (text.match(/Ray ID:?\s*(?:<[^>]*>\s*)*([0-9a-f]{16})/i) || [])[1];
+  if (res.status === 403 && html && (rayHeader || /cloudflare/i.test(text))) {
     return new Error(
-      `${what} was blocked by Cloudflare (HTTP ${res.status}${rayId ? `, Ray ID ${rayId}` : ""}): this runner's network is not on the Rosetta allow-list. Run the sync on an allow-listed runner (see the README).`
+      `${what} was blocked by Cloudflare (HTTP 403${rayId ? `, Ray ID ${rayId}` : ""}): this runner's network is not on the Rosetta allow-list. Run the sync on an allow-listed runner (see the README).`
     );
   }
-  let detail;
-  try {
-    detail = JSON.stringify(text ? JSON.parse(text) : {});
-  } catch {
-    detail = JSON.stringify({ raw: text.length > 300 ? `${text.slice(0, 300)}…` : text });
-  }
-  return new Error(`${what} failed with HTTP ${res.status}: ${detail}`);
+  const body = parseBody(text);
+  if (typeof body.raw === "string" && body.raw.length > 300) body.raw = `${body.raw.slice(0, 300)}…`;
+  return new Error(`${what} failed with HTTP ${res.status}${rayId ? ` (Ray ID ${rayId})` : ""}: ${JSON.stringify(body)}`);
 }
 
 async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5 }) {
