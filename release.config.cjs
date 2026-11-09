@@ -9,6 +9,8 @@ module.exports = {
         { name: "beta", prerelease: true },
         { name: "alpha", prerelease: true },
     ],
+    // Keep in sync with "repository" in package.json: npm's provenance check
+    // compares that one with the repository the release runs in.
     repositoryUrl: "git@github.com:deriv-com/translations.git",
     plugins: [
         [

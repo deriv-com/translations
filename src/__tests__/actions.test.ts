@@ -110,7 +110,9 @@ describe("the deprecated Makima action path", () => {
 describe("the retired deriv-makima-sync bin", () => {
   it("is still declared, so npx cannot fetch a registry package of that name, and only fails with a pointer", () => {
     const { bin } = JSON.parse(read("package.json")) as { bin: Record<string, string> };
-    expect(bin["deriv-makima-sync"]).toBe("./dist/deriv-makima-sync.cjs");
+    expect(bin["deriv-makima-sync"]).toBe("dist/deriv-makima-sync.cjs");
+    // npm 11 drops a bin written as "./dist/…" on publish, so none may use that form.
+    expect(Object.values(bin).filter((p) => p.startsWith("./"))).toEqual([]);
     const stub = read("src/scripts/deriv-makima-sync.cjs");
     expect(stub).toContain("deriv-rosetta-sync");
     expect(stub).toMatch(/if \(require\.main === module\) \{[\s\S]*process\.exit\(1\);[\s\S]*\}/);

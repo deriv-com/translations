@@ -1,5 +1,9 @@
 {
   "name": "@deriv-com/translations",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deriv-com/translations.git"
+  },
   "type": "module",
   "files": [
     "dist"
@@ -7,9 +11,9 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "deriv-extract-translations": "./dist/deriv-extract-translations.cjs",
-    "deriv-rosetta-sync": "./dist/deriv-rosetta-sync.cjs",
-    "deriv-makima-sync": "./dist/deriv-makima-sync.cjs"
+    "deriv-extract-translations": "dist/deriv-extract-translations.cjs",
+    "deriv-rosetta-sync": "dist/deriv-rosetta-sync.cjs",
+    "deriv-makima-sync": "dist/deriv-makima-sync.cjs"
   },
   "private": false,
   "version": "1.2.4",
