@@ -471,6 +471,30 @@ describe("submit → poll", () => {
     expect(out.errors).toEqual({ French: "boom" });
   });
 
+  it("reports a Cloudflare block in one line with the Ray ID, not the HTML page", async () => {
+    const page = "<!DOCTYPE html><title>Attention Required! | Cloudflare</title><p>Sorry, you have been blocked</p>" + "x".repeat(5000);
+    const blocked: FetchLike = async () =>
+      new Response(page, { status: 403, headers: { "Content-Type": "text/html; charset=UTF-8", "cf-ray": "a57c3a92cf2c14cc-FRA" } });
+    const run = sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl: blocked, base: "https://rosetta.test", apiKey: "s", sleep: noSleep });
+    const error = await run.then(() => null, (e: Error) => e);
+    expect(error?.message).toBe(
+      "Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID a57c3a92cf2c14cc): this runner's network is not on the Rosetta allow-list. Run the sync on an allow-listed runner (see the README)."
+    );
+  });
+
+  it("keeps Rosetta's JSON error as it is, and cuts any other non-JSON body short", async () => {
+    const json: FetchLike = async () => jsonResponse(401, { error: { code: "UNAUTHENTICATED", message: "Invalid API key." } });
+    await expect(sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl: json, base: "https://rosetta.test", apiKey: "s", sleep: noSleep })).rejects.toThrow(
+      'Rosetta submit failed with HTTP 401: {"error":{"code":"UNAUTHENTICATED","message":"Invalid API key."}}'
+    );
+    const text: FetchLike = async () => new Response("y".repeat(1000), { status: 400, headers: { "Content-Type": "text/plain" } });
+    const error = await sync
+      .translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl: text, base: "https://rosetta.test", apiKey: "s", sleep: noSleep })
+      .then(() => null, (e: Error) => e);
+    expect(error?.message.length).toBeLessThan(400);
+    expect(error?.message).toMatch(/failed with HTTP 400: \{"raw":"y+…"\}/);
+  });
+
   it("retries a 429 on submit and fails loudly on a failed job", async () => {
     const sleep = vi.fn(() => Promise.resolve());
     let posts = 0;

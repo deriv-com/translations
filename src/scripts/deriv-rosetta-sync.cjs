@@ -484,6 +484,31 @@ async function readJson(res) {
   }
 }
 
+/**
+ * The error for an unexpected response. Cloudflare in front of the API answers
+ * a request from a network that is not on its allow-list with an HTML block
+ * page; report that in one line, with the Ray ID, instead of dumping the page
+ * into the log. Any other non-JSON body is cut short.
+ */
+async function httpFailure(res, what) {
+  const text = await res.text().catch(() => "");
+  const html = /text\/html/i.test(res.headers.get("content-type") || "");
+  const rayHeader = res.headers.get("cf-ray");
+  if (html && (rayHeader || /cloudflare/i.test(text))) {
+    const rayId = rayHeader ? rayHeader.split("-")[0] : (text.match(/Ray ID:?\s*(?:<[^>]*>\s*)*([0-9a-f]{16})/i) || [])[1];
+    return new Error(
+      `${what} was blocked by Cloudflare (HTTP ${res.status}${rayId ? `, Ray ID ${rayId}` : ""}): this runner's network is not on the Rosetta allow-list. Run the sync on an allow-listed runner (see the README).`
+    );
+  }
+  let detail;
+  try {
+    detail = JSON.stringify(text ? JSON.parse(text) : {});
+  } catch {
+    detail = JSON.stringify({ raw: text.length > 300 ? `${text.slice(0, 300)}…` : text });
+  }
+  return new Error(`${what} failed with HTTP ${res.status}: ${detail}`);
+}
+
 async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5 }) {
   let attempt = 0;
   for (;;) {
@@ -510,8 +535,7 @@ async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5
       attempt += 1;
       continue;
     }
-    const detail = await readJson(res);
-    throw new Error(`Rosetta submit failed with HTTP ${res.status}: ${JSON.stringify(detail)}`);
+    throw await httpFailure(res, "Rosetta submit");
   }
 }
 
@@ -534,8 +558,7 @@ async function pollJob({ fetchImpl, base, apiKey, jobId, sleep, maxWaitMs = 30 *
       continue;
     }
     if (res.status !== 200) {
-      const detail = await readJson(res);
-      throw new Error(`Rosetta poll for ${jobId} failed with HTTP ${res.status}: ${JSON.stringify(detail)}`);
+      throw await httpFailure(res, `Rosetta poll for ${jobId}`);
     }
     const body = await readJson(res);
     if (body.status === "completed" || body.status === "partial") return body;

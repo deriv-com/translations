@@ -280,6 +280,15 @@ install `@deriv-com/translations` from npm. So the pin also covers the extractor
 and the sync that runs with `ROSETTA_API_TOKEN`, not only the action's steps.
 (The deprecated Makima path runs the v1.6.1 action, itself pinned by commit.)
 
+### Runner network
+
+The Rosetta API only admits allow-listed networks. GitHub-hosted runners such
+as `ubuntu-latest` are not on that list, so their requests get Cloudflare's
+"Sorry, you have been blocked" page, and the sync fails with
+`Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID …)`. Run the sync
+job on a runner group whose network the Rosetta team has allow-listed, and send
+them the Ray ID from the error if a run is blocked.
+
 ### Moving from the Makima action
 
 Before this rename the action was `extract_and_sync_translations_makima`, with
