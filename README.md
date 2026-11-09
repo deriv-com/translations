@@ -274,10 +274,11 @@ check), `from_fallback` (values taken from `FALLBACK_ENVIRONMENT`) and
 published counts as reused).
 
 Pin the action to a release commit by SHA (`…_rosetta@<sha> # v1.x.y`) rather
-than `@master`. Both actions run their scripts from their own commit, with
-dependencies from that commit's `package-lock.json`, and never install
-`@deriv-com/translations` from npm. So the pin also covers the extractor and
-the sync that runs with `ROSETTA_API_TOKEN`, not only the action's steps.
+than `@master`. The Crowdin and Rosetta actions run their scripts from their
+own commit, with dependencies from that commit's `package-lock.json`, and never
+install `@deriv-com/translations` from npm. So the pin also covers the extractor
+and the sync that runs with `ROSETTA_API_TOKEN`, not only the action's steps.
+(The deprecated Makima path runs the v1.6.1 action, itself pinned by commit.)
 
 ### Moving from the Makima action
 
@@ -290,8 +291,9 @@ folder, pass `ROSETTA_API_TOKEN` (create it at rosetta.deriv.ai) and
 a dry run first. The settings are checked before anything is installed: the
 base must be an https host with no path, and the Makima gateway is refused.
 Until Makima is switched off on 18 Nov 2026, the old path still works: it runs
-the v1.6.1 action and warns. After that it fails with a pointer here, and the
-`deriv-makima-sync` bin already only fails with a pointer to `deriv-rosetta-sync`.
+the v1.6.1 action and warns. The first release after the sunset is planned to
+turn it into a step that only fails with a pointer here. The `deriv-makima-sync`
+bin already only fails with a pointer to `deriv-rosetta-sync`.
 A repo that loads the script directly should load `src/scripts/deriv-rosetta-sync.cjs`,
 where `makimaNameFor` is now `languageNameFor` and `buildSummary` takes
 `rosettaErrors` instead of `makimaErrors`.

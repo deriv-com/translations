@@ -113,8 +113,14 @@ describe("the retired deriv-makima-sync bin", () => {
     expect(bin["deriv-makima-sync"]).toBe("./dist/deriv-makima-sync.cjs");
     const stub = read("src/scripts/deriv-makima-sync.cjs");
     expect(stub).toContain("deriv-rosetta-sync");
-    expect(stub).toMatch(/process\.exit\(1\)/);
+    expect(stub).toMatch(/if \(require\.main === module\) \{[\s\S]*process\.exit\(1\);[\s\S]*\}/);
     expect(requiresOf("deriv-makima-sync.cjs")).toEqual([]);
+  });
+
+  it("does nothing when it is only required", async () => {
+    // Exiting on require would kill a test runner or a tool that inspects bins.
+    // @ts-expect-error -- untyped .cjs module; only loading it is under test
+    await expect(import("../scripts/deriv-makima-sync.cjs")).resolves.toBeDefined();
   });
 });
 

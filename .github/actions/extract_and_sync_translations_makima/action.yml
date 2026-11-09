@@ -1,9 +1,10 @@
 name: "Extract and sync translations (Makima, deprecated)"
 description: "Deprecated: runs the v1.6.1 Makima action until Makima's sunset on 18 Nov 2026. Move to extract_and_sync_translations_rosetta"
 # Kept so a workflow still on this path keeps working until Makima is switched
-# off: it runs the released v1.6.1 action, pinned by commit, and warns. After
-# 18 Nov 2026 it will only fail with a pointer, and the release after that
-# removes it. The inputs and outputs are v1.6.1's.
+# off: it runs the released v1.6.1 action, pinned by commit, and warns. Planned:
+# the first release after 18 Nov 2026 replaces this with a step that only fails
+# with a pointer, and a later release removes the path. The inputs and outputs
+# are v1.6.1's.
 inputs:
   PROJECT_NAME:
     description: "Project name, the R2 folder the runtime reads from"
