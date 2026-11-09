@@ -5,7 +5,7 @@
 
 /**
  * deriv-makima-sync — translate the extracted `translations/en.json` with the
- * Makima gateway and write one `translations/<locale>.json` per target locale,
+ * Rosetta gateway and write one `translations/<locale>.json` per target locale,
  * in the same shape the Crowdin-based action produced, so the runtime
  * (`initializeI18n`, which fetches `<cdnUrl>/translations/<lang>.json` and looks
  * strings up by crc32 of the English text) cannot tell the two apart.
@@ -13,10 +13,10 @@
  * It translates only the delta: the current `<locale>.json` is fetched from the
  * CDN first and acts as the translation memory. A key already there is kept
  * verbatim, a key no longer in `en.json` is pruned, and only keys the CDN does
- * not have are sent to Makima. Because keys are the crc32 of the English text,
+ * not have are sent to Rosetta. Because keys are the crc32 of the English text,
  * a reworded string is simply a new key.
  *
- * Two optional sources come before Makima (see `planLocale`):
+ * Two optional sources come before Rosetta (see `planLocale`):
  *   - FALLBACK_ENVIRONMENT: another environment's CDN catalogue, so production
  *     takes the value QA reviewed on staging instead of translating the key a
  *     second time. FALLBACK_MODE "missing" (default) uses it only for keys this
@@ -26,17 +26,20 @@
  *
  * Placeholders (`{{name}}`), i18next component markers (`<0>…</0>`) and
  * caller-supplied protected terms (brand and product names) are swapped for
- * HTML tokens Makima preserves, restored afterwards, and verified to appear
+ * HTML tokens Rosetta preserves, restored afterwards, and verified to appear
  * exactly once. A string whose tokens did not survive is left OUT of the
  * locale file: the runtime then falls back to English for it, and the next run
  * retries it because its key is still missing.
  *
  * Environment (the composite action maps its inputs onto these):
  *   PROJECT_NAME, ENVIRONMENT (staging|production), TARGET_LOCALES (e.g.
- *   "es,fr,pt"), MAKIMA_API_KEY, MAKIMA_API_BASE, CDN_BASE_URL, DRY_RUN,
+ *   "es,fr,pt"), ROSETTA_API_TOKEN, ROSETTA_API_BASE, CDN_BASE_URL, DRY_RUN,
  *   PROTECTED_TERMS_FILE (optional JSON array of strings), FALLBACK_ENVIRONMENT,
  *   FALLBACK_MODE, OVERRIDES_FILE (all optional), TRANSLATIONS_DIR
  *   (default ./translations), REFERENCE (default "<project>/<env>/<GITHUB_SHA>").
+ *
+ * MAKIMA_API_KEY and MAKIMA_API_BASE, the names from before Makima was replaced
+ * by Rosetta, are still read when the ROSETTA_* name is unset, with a warning.
  *
  * The API key is read from the environment and never written to any log.
  *
@@ -49,7 +52,7 @@
 const fs = require("fs");
 const path = require("path");
 
-/** Locale code → Makima language name, from the Makima API guide (39 languages). */
+/** Locale code → language name the API expects, from the Makima API guide that Rosetta replaced (39 languages). */
 const LANGUAGES = [
   { code: "fr", name: "French" },
   { code: "ar", name: "Arabic" },
@@ -95,7 +98,7 @@ const LANGUAGES = [
 
 /**
  * Resolve a locale code (as used in the file name, e.g. "es") to the language
- * name Makima expects (e.g. "Spanish"). The runtime lower-cases the code when
+ * name Rosetta expects (e.g. "Spanish"). The runtime lower-cases the code when
  * it builds the URL, so matching is case-insensitive; the file is always
  * written with the lower-case code.
  */
@@ -155,7 +158,7 @@ function countTerms(text, terms) {
 }
 
 /**
- * Replace everything Makima must not translate with HTML tokens it preserves:
+ * Replace everything Rosetta must not translate with HTML tokens it preserves:
  *   `{{name}}`      → `<ph i="N"></ph>`   (an element with no visible text)
  *   `<0>…</0>`      → `<c0>…</c0>`        (valid tag names; the inner text is still translated)
  *   protected term  → `<pt i="N"></pt>`   (brand names; the term is kept in `tokens`)
@@ -198,7 +201,7 @@ function signature(text) {
  */
 function restore(translated, tokens, sourceEnglish) {
   let out = String(translated);
-  // Makima may serialise an empty element as <ph i="1"></ph>, <ph i="1"/> or
+  // Rosetta may serialise an empty element as <ph i="1"></ph>, <ph i="1"/> or
   // <ph i="1" /> and may put whitespace inside; accept all of them.
   out = out.replace(/<(ph|pt)\s+i="(\d+)"\s*(?:\/>|>\s*<\/\1\s*>)/g, (_m, kind, i) => {
     const token = tokens[Number(i)];
@@ -269,10 +272,10 @@ const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
  *      (this environment's CDN catalogue), else in `fallback` (another
  *      environment's, e.g. the staging catalogue QA reviewed);
  *      with `fallbackMode: "prefer"`, `fallback` first and `prev` second;
- *   3. otherwise the key is missing and goes to Makima.
+ *   3. otherwise the key is missing and goes to Rosetta.
  * A fallback value is used only if it passes `checkTranslation`; one that does
  * not is reported in `rejectedFallback` and the key carries on to `prev` or
- * Makima. Keys are the crc32 of the English text, so an equal key in another
+ * Rosetta. Keys are the crc32 of the English text, so an equal key in another
  * environment means an equal source. Keys of `prev` that are no longer in
  * `en.json` are pruned; keys only the fallback has are never added.
  */
@@ -320,12 +323,12 @@ function mergeLocale({ en, plan, translated, tokensByKey, failedKeys, failureMes
   let added = 0;
   for (const key of plan.missing) {
     if (failedKeys && failedKeys.has(key)) {
-      keptBack.push({ key, english: en[key], reason: `language failed in Makima: ${failureMessage || "see errors"}` });
+      keptBack.push({ key, english: en[key], reason: `language failed in Rosetta: ${failureMessage || "see errors"}` });
       continue;
     }
     const value = translated ? translated[key] : undefined;
     if (typeof value !== "string" || value.trim() === "") {
-      keptBack.push({ key, english: en[key], reason: "not returned by Makima" });
+      keptBack.push({ key, english: en[key], reason: "not returned by Rosetta" });
       continue;
     }
     const result = restore(value, tokensByKey[key] || [], en[key]);
@@ -413,10 +416,10 @@ function resolveOverrides(raw, { en, locales, protectedTerms = [], file = "the o
 }
 
 // ---------------------------------------------------------------------------
-// Makima client (submit → poll)
+// Rosetta client (submit → poll)
 // ---------------------------------------------------------------------------
 
-/** Keep each job well under Makima's 1,500,000-byte transport limit. */
+/** Keep each job well under the 1,500,000-byte transport limit Makima documented (Rosetta kept its API). */
 const MAX_CHUNK_BYTES = 400 * 1024;
 /** Per-request timeout; a hung socket must not stall the job for hours. */
 const FETCH_TIMEOUT_MS = 60 * 1000;
@@ -490,7 +493,7 @@ async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5
     const res = await fetchWithRetry({
       fetchImpl,
       sleep,
-      url: `${base}/api/makima/translate`,
+      url: `${base}/v1/translate`,
       init: {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -499,7 +502,7 @@ async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5
     });
     if (res.status === 202 || res.status === 200) {
       const json = await readJson(res);
-      if (!json.job_id) throw new Error(`Makima accepted the job but returned no job_id: ${JSON.stringify(json)}`);
+      if (!json.job_id) throw new Error(`Rosetta accepted the job but returned no job_id: ${JSON.stringify(json)}`);
       return json.job_id;
     }
     if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts) {
@@ -508,7 +511,7 @@ async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5
       continue;
     }
     const detail = await readJson(res);
-    throw new Error(`Makima submit failed with HTTP ${res.status}: ${JSON.stringify(detail)}`);
+    throw new Error(`Rosetta submit failed with HTTP ${res.status}: ${JSON.stringify(detail)}`);
   }
 }
 
@@ -517,27 +520,27 @@ async function pollJob({ fetchImpl, base, apiKey, jobId, sleep, maxWaitMs = 30 *
   let attempt = 0;
   let transient = 0;
   for (;;) {
-    if (now() > deadline) throw new Error(`Makima job ${jobId} did not finish within ${maxWaitMs / 1000}s`);
+    if (now() > deadline) throw new Error(`Rosetta job ${jobId} did not finish within ${maxWaitMs / 1000}s`);
     const res = await fetchWithRetry({
       fetchImpl,
       sleep,
-      url: `${base}/api/makima/translate/${encodeURIComponent(jobId)}`,
+      url: `${base}/v1/translate/${encodeURIComponent(jobId)}`,
       init: { headers: { Authorization: `Bearer ${apiKey}` } },
     });
     if (res.status === 429 || res.status >= 500) {
-      if (transient >= 8) throw new Error(`Makima poll for ${jobId} kept failing with HTTP ${res.status}`);
+      if (transient >= 8) throw new Error(`Rosetta poll for ${jobId} kept failing with HTTP ${res.status}`);
       await sleep(retryDelayMs(res, transient));
       transient += 1;
       continue;
     }
     if (res.status !== 200) {
       const detail = await readJson(res);
-      throw new Error(`Makima poll for ${jobId} failed with HTTP ${res.status}: ${JSON.stringify(detail)}`);
+      throw new Error(`Rosetta poll for ${jobId} failed with HTTP ${res.status}: ${JSON.stringify(detail)}`);
     }
     const body = await readJson(res);
     if (body.status === "completed" || body.status === "partial") return body;
     if (body.status === "failed") {
-      throw new Error(`Makima job ${jobId} failed: ${JSON.stringify(body.error || body.errors || body)}`);
+      throw new Error(`Rosetta job ${jobId} failed: ${JSON.stringify(body.error || body.errors || body)}`);
     }
     await sleep(retryDelayMs(null, Math.min(attempt, 3)));
     attempt += 1;
@@ -629,7 +632,7 @@ async function fetchPrevious({ fetchImpl, cdnBase, project, environment, locale,
 
 function buildSummary({ project, environment, reference, status, perLocale, makimaErrors, dryRun, fallbackEnvironment, fallbackMode, overrides }) {
   const lines = [];
-  lines.push(`## Makima translation sync — ${project} / ${environment}${dryRun ? " (dry run)" : ""}`);
+  lines.push(`## Rosetta translation sync — ${project} / ${environment}${dryRun ? " (dry run)" : ""}`);
   lines.push("");
   lines.push(`Reference: \`${reference}\` · Job status: **${status}**`);
   if (fallbackEnvironment) {
@@ -637,7 +640,7 @@ function buildSummary({ project, environment, reference, status, perLocale, maki
     lines.push(
       fallbackMode === "prefer"
         ? `Fallback: **${fallbackEnvironment}** values win over ${environment}'s own; "From ${fallbackEnvironment}" counts the values that changed or were missing.`
-        : `Fallback: keys ${environment} lacks are taken from **${fallbackEnvironment}** before Makima is asked.`
+        : `Fallback: keys ${environment} lacks are taken from **${fallbackEnvironment}** before Rosetta is asked.`
     );
   }
   // The extra columns sit after "Kept back" so existing readers of the table keep their positions.
@@ -652,7 +655,7 @@ function buildSummary({ project, environment, reference, status, perLocale, maki
   const rejected = perLocale.flatMap((r) => (r.rejectedFallback || []).map((k) => ({ locale: r.locale, ...k })));
   if (rejected.length) {
     lines.push("");
-    lines.push(`### ${fallbackEnvironment} values not used (failed the token check; ${environment}'s own value or Makima used instead)`);
+    lines.push(`### ${fallbackEnvironment} values not used (failed the token check; ${environment}'s own value or Rosetta used instead)`);
     for (const k of rejected) {
       lines.push(`- **${k.locale}** \`${k.key}\` — ${k.reason}: ${JSON.stringify(k.english)}`);
     }
@@ -678,7 +681,7 @@ function buildSummary({ project, environment, reference, status, perLocale, maki
   const errs = Object.entries(makimaErrors || {});
   if (errs.length) {
     lines.push("");
-    lines.push("### Makima errors");
+    lines.push("### Rosetta errors");
     for (const [language, message] of errs) lines.push(`- **${language}**: ${message}`);
   }
   return lines.join("\n");
@@ -689,13 +692,26 @@ function appendOutput(file, lines) {
   fs.appendFileSync(file, lines.map((l) => `${l}\n`).join(""));
 }
 
+const isSet = (value) => value !== undefined && value !== null && String(value).trim() !== "";
+
+/**
+ * Read a ROSETTA_* setting, falling back to the MAKIMA_* name it replaced.
+ * Returns `{ value, legacy }`; `legacy` is `{ from, to }` when the old name was used.
+ */
+function readRenamed(env, name, legacyName) {
+  if (isSet(env[name])) return { value: String(env[name]), legacy: null };
+  if (isSet(env[legacyName])) return { value: String(env[legacyName]), legacy: { from: legacyName, to: name } };
+  throw new Error(`${name} is required`);
+}
+
 function readEnv(env) {
-  // MAKIMA_API_BASE is deliberately required: the guide's only published host
-  // is a `-dev` one, and no consumer should fall back to it without noticing.
-  const required = ["PROJECT_NAME", "ENVIRONMENT", "TARGET_LOCALES", "MAKIMA_API_KEY", "MAKIMA_API_BASE"];
-  for (const name of required) {
-    if (!env[name] || !String(env[name]).trim()) throw new Error(`${name} is required`);
+  for (const name of ["PROJECT_NAME", "ENVIRONMENT", "TARGET_LOCALES"]) {
+    if (!isSet(env[name])) throw new Error(`${name} is required`);
   }
+  const token = readRenamed(env, "ROSETTA_API_TOKEN", "MAKIMA_API_KEY");
+  // The base is deliberately required, with no default, so a consumer always
+  // names the host it sends the token to.
+  const base = readRenamed(env, "ROSETTA_API_BASE", "MAKIMA_API_BASE");
   const environments = ["staging", "production"];
   const environment = String(env.ENVIRONMENT).trim();
   if (!environments.includes(environment)) {
@@ -725,8 +741,9 @@ function readEnv(env) {
     project,
     environment,
     locales,
-    apiKey: String(env.MAKIMA_API_KEY),
-    base: String(env.MAKIMA_API_BASE).trim().replace(/\/$/, ""),
+    apiKey: token.value,
+    base: base.value.trim().replace(/\/$/, ""),
+    legacyNames: [token.legacy, base.legacy].filter(Boolean),
     cdnBase: env.CDN_BASE_URL || "https://translations.deriv.com",
     dryRun: /^(1|true|yes)$/i.test(String(env.DRY_RUN || "")),
     translationsDir: path.resolve(env.TRANSLATIONS_DIR || "./translations"),
@@ -754,10 +771,13 @@ async function main(env = process.env, io = {}) {
   const sleep = io.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const log = io.log || ((m) => console.log(m));
   const cfg = readEnv(env);
+  for (const { from, to } of cfg.legacyNames) {
+    log(`::warning::${from} is deprecated; set ${to} instead. The base must be the Rosetta host (https://translation-api.deriv.ai), not the Makima one.`);
+  }
 
   // The API key is never logged, not even derived from: the gateway records its
   // own per-caller fingerprint, which is enough to attribute a call.
-  log(`Makima sync for ${cfg.project}/${cfg.environment} → ${cfg.locales.join(", ")}${cfg.dryRun ? " (dry run)" : ""}`);
+  log(`Rosetta sync for ${cfg.project}/${cfg.environment} → ${cfg.locales.join(", ")}${cfg.dryRun ? " (dry run)" : ""}`);
 
   const enPath = path.join(cfg.translationsDir, "en.json");
   if (!fs.existsSync(enPath)) throw new Error(`${enPath} not found — run deriv-extract-translations first`);
@@ -834,7 +854,7 @@ async function main(env = process.env, io = {}) {
       failureMessage: makimaErrors[languageName],
     });
     fs.writeFileSync(path.join(cfg.translationsDir, localeFileName(locale)), JSON.stringify(merged.catalogue));
-    const note = makimaErrors[languageName] ? "Makima failed this language for some or all chunks; those keys are left out and retried next run" : "";
+    const note = makimaErrors[languageName] ? "Rosetta failed this language for some or all chunks; those keys are left out and retried next run" : "";
     perLocale.push({ locale, ...merged, rejectedFallback: plan.rejectedFallback, note });
   }
 
@@ -860,7 +880,7 @@ async function main(env = process.env, io = {}) {
   log(summary);
   if (cfg.summaryFile) fs.appendFileSync(cfg.summaryFile, `${summary}\n`);
   // Surface problems as workflow annotations, not only in the summary table.
-  if (status === "partial") log(`::warning::Makima returned a partial result for ${cfg.project}/${cfg.environment}: ${Object.keys(makimaErrors).join(", ")} — see the job summary`);
+  if (status === "partial") log(`::warning::Rosetta returned a partial result for ${cfg.project}/${cfg.environment}: ${Object.keys(makimaErrors).join(", ")} — see the job summary`);
   if (keptBackTotal > 0) log(`::warning::${keptBackTotal} string(s) were kept out of the ${cfg.project}/${cfg.environment} catalogues because a placeholder, marker or protected term did not survive translation — see the job summary`);
   if (overrides && overrides.stale.length) log(`::warning::${overrides.stale.length} override(s) in ${cfg.overridesFile} name English text that is no longer extracted — see the job summary`);
   appendOutput(cfg.outputFile, [

@@ -1,5 +1,5 @@
-name: "Extract and sync translations (Makima)"
-description: "Extract localize() strings, translate the new ones with the Makima gateway, and upload the catalogues to Cloudflare R2"
+name: "Extract and sync translations (Rosetta)"
+description: "Extract localize() strings, translate the new ones with the Rosetta translation API, and upload the catalogues to Cloudflare R2"
 inputs:
   PROJECT_NAME:
     description: "Project name — the R2 folder the runtime reads from (same as the Crowdin action)"
@@ -14,12 +14,24 @@ inputs:
   TARGET_LOCALES:
     description: "Comma-separated locale codes to translate into, e.g. es,fr,pt"
     required: true
+  # Not `required: true` only so the deprecated MAKIMA_* inputs still work for
+  # one release; the sync fails when neither name is set.
+  ROSETTA_API_TOKEN:
+    description: "Bearer token for the Rosetta translation API, created at rosetta.deriv.ai (secret). Required unless the deprecated MAKIMA_API_KEY is set"
+    required: false
+    default: ""
+  ROSETTA_API_BASE:
+    description: "Base URL of the Rosetta API, e.g. https://translation-api.deriv.ai (no default, so a consumer always names the host it sends the token to). Required unless the deprecated MAKIMA_API_BASE is set"
+    required: false
+    default: ""
   MAKIMA_API_KEY:
-    description: "Bearer token for the Makima translation gateway (secret)"
-    required: true
+    description: "Deprecated: use ROSETTA_API_TOKEN. Read only when ROSETTA_API_TOKEN is empty"
+    required: false
+    default: ""
   MAKIMA_API_BASE:
-    description: "Base URL of the Makima API, as given by the platform team (required: no default, so no consumer silently relies on a dev host)"
-    required: true
+    description: "Deprecated: use ROSETTA_API_BASE, which must be the Rosetta host. Read only when ROSETTA_API_BASE is empty"
+    required: false
+    default: ""
   CDN_BASE_URL:
     description: "Where the current catalogues are served from; used as the translation memory"
     required: false
@@ -29,7 +41,7 @@ inputs:
     required: false
     default: ""
   FALLBACK_ENVIRONMENT:
-    description: "Optional: staging or production, another environment whose CDN catalogue is consulted before Makima (e.g. staging for a production sync, so production takes the values QA reviewed instead of translating them again). Its values must pass the same token check as Makima's."
+    description: "Optional: staging or production, another environment whose CDN catalogue is consulted before Rosetta (e.g. staging for a production sync, so production takes the values QA reviewed instead of translating them again). Its values must pass the same token check as Rosetta's."
     required: false
     default: ""
   FALLBACK_MODE:
@@ -93,13 +105,15 @@ runs:
       env:
         PROJECT_SOURCE_DIRECTORY: ${{ inputs.PROJECT_SOURCE_DIRECTORY }}
       run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-extract-translations.cjs" "$PROJECT_SOURCE_DIRECTORY" --verbose
-    - name: Translate new strings with Makima
+    - name: Translate new strings with Rosetta
       id: sync
       shell: bash
       env:
         PROJECT_NAME: ${{ inputs.PROJECT_NAME }}
         ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
         TARGET_LOCALES: ${{ inputs.TARGET_LOCALES }}
+        ROSETTA_API_TOKEN: ${{ inputs.ROSETTA_API_TOKEN }}
+        ROSETTA_API_BASE: ${{ inputs.ROSETTA_API_BASE }}
         MAKIMA_API_KEY: ${{ inputs.MAKIMA_API_KEY }}
         MAKIMA_API_BASE: ${{ inputs.MAKIMA_API_BASE }}
         CDN_BASE_URL: ${{ inputs.CDN_BASE_URL }}
@@ -136,5 +150,5 @@ runs:
       if: ${{ steps.sync.outputs.status == 'partial' }}
       shell: bash
       run: |
-        echo "::error::Makima returned a partial result — see the job summary for the language that failed. Re-run the workflow to retry it."
+        echo "::error::Rosetta returned a partial result — see the job summary for the language that failed. Re-run the workflow to retry it."
         exit 1

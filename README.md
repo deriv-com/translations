@@ -184,28 +184,30 @@ jobs:
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 ```
 
-## Syncing translations with Makima
+## Syncing translations with Rosetta
 
-Crowdin is being decommissioned in favour of the internal Makima translation
-gateway. `extract_and_sync_translations_makima` is a drop-in sibling of the
+Crowdin is being decommissioned in favour of the internal Rosetta translation
+API (`rosetta.deriv.ai`), which replaced the Makima gateway. The action and
+the bin keep their Makima names: `extract_and_sync_translations_makima` is a
+drop-in sibling of the
 Crowdin action: it runs the same extractor and uploads the same
 `translations/<locale>.json` files to the same R2 folder, so the runtime needs
-no change. Only the middle step differs — new strings are translated by Makima
+no change. Only the middle step differs — new strings are translated by Rosetta
 instead of downloaded from Crowdin.
 
 How it keeps translations stable:
 
 - **Delta only.** The current `<locale>.json` is fetched from the CDN first and
   used as the translation memory. Keys already there are kept verbatim, keys no
-  longer in `en.json` are pruned, and only missing keys are sent to Makima.
+  longer in `en.json` are pruned, and only missing keys are sent to Rosetta.
   Because keys are the crc32 of the English text, a reworded string is a new key.
 - **Protected tokens.** `{{placeholders}}`, `<0>…</0>` component markers and any
   terms listed in `PROTECTED_TERMS_FILE` (brand and product names) are swapped
-  for HTML tokens Makima preserves, restored afterwards, and verified to appear
+  for HTML tokens Rosetta preserves, restored afterwards, and verified to appear
   exactly once. A string that fails the check is left out of the file — the
   runtime falls back to English for it and the next run retries it — and is
   listed in the job summary.
-- **Partial results.** If Makima fails a language, the locales that succeeded
+- **Partial results.** If Rosetta fails a language, the locales that succeeded
   are published, the failed locale's file is left as the CDN had it, and the run
   is marked failed *after* the upload so the site keeps working.
 - **Dry run.** With `DRY_RUN: "true"` the catalogues are attached as a workflow
@@ -222,12 +224,12 @@ How it keeps translations stable:
 - **Reviewed values travel between environments.** With
   `FALLBACK_ENVIRONMENT: staging` on the production sync, a key production
   lacks takes the value in the staging catalogue (the one QA reviewed) before
-  Makima is asked; equal keys mean equal English, because keys are the crc32 of
+  Rosetta is asked; equal keys mean equal English, because keys are the crc32 of
   the text. `FALLBACK_MODE: prefer` goes further: staging's value also replaces
   a different one production already has, so the two catalogues converge. A
   staging value must pass the same placeholder, marker and protected-term check
-  as Makima's output; one that does not is listed in the job summary and the
-  key falls through to production's own value (prefer) or Makima (missing).
+  as Rosetta's output; one that does not is listed in the job summary and the
+  key falls through to production's own value (prefer) or Rosetta (missing).
   Keys only staging has are never added, and production keys no longer in
   `en.json` are still pruned.
 - **Corrections go through a pull request.** `OVERRIDES_FILE` points at a JSON
@@ -253,12 +255,17 @@ The action takes the following inputs:
 - `TARGET_LOCALES`: comma-separated locale codes to translate into, e.g. `es,fr,pt`.
   Chinese also accepts the runtime's `zh_cn` / `zh_tw` (the `ZH_CN` / `ZH_TW` language
   codes), and the file keeps that name.
-- `MAKIMA_API_KEY`: Bearer token for the gateway (a secret, minted by the
-  platform team against your team's LiteLLM service-account key).
-- `MAKIMA_API_BASE`: base URL of the gateway as given by the platform team. Required, with no default, so no consumer silently relies on a dev host.
+- `ROSETTA_API_TOKEN`: Bearer token for Rosetta (a secret). Create it at
+  [rosetta.deriv.ai](https://rosetta.deriv.ai) under *Tokens* with your team's
+  LiteLLM key; it is shown only once.
+- `ROSETTA_API_BASE`: base URL of the Rosetta API, `https://translation-api.deriv.ai`.
+  Required, with no default, so a consumer always names the host it sends the token to.
+- `MAKIMA_API_KEY`, `MAKIMA_API_BASE`: deprecated names for the two above, read
+  only when the Rosetta one is empty, with a warning. Makima is sunset on
+  18 Nov 2026, so the base must point at Rosetta whichever name you use.
 - `CDN_BASE_URL`: where the current catalogues are served (default `https://translations.deriv.com`).
 - `PROTECTED_TERMS_FILE`: optional path to a JSON array of strings that must never be translated.
-- `FALLBACK_ENVIRONMENT`: optional `staging` or `production`, another environment whose catalogue is consulted before Makima. Must differ from `ENVIRONMENT`.
+- `FALLBACK_ENVIRONMENT`: optional `staging` or `production`, another environment whose catalogue is consulted before Rosetta. Must differ from `ENVIRONMENT`.
 - `FALLBACK_MODE`: `missing` (default) uses the fallback only for keys this environment lacks; `prefer` also lets it replace this environment's own values.
 - `OVERRIDES_FILE`: optional path to reviewed corrections, shaped `{"<locale>": {"<English text>": "<translation>"}}`.
 - `DRY_RUN`: `true` to write an artifact instead of uploading.
@@ -274,9 +281,9 @@ Pin the action to a release commit by SHA (`…_makima@<sha> # v1.x.y`) rather
 than `@master`. Both actions run their scripts from their own commit, with
 dependencies from that commit's `package-lock.json`, and never install
 `@deriv-com/translations` from npm. So the pin also covers the extractor and
-the sync that runs with `MAKIMA_API_KEY`, not only the action's steps.
+the sync that runs with `ROSETTA_API_TOKEN`, not only the action's steps.
 
-### Example usage of the Makima action in the workflow file:
+### Example usage of the Rosetta action in the workflow file:
 
 ```yaml
 name: Sync translations
@@ -305,8 +312,8 @@ jobs:
           PROJECT_SOURCE_DIRECTORY: './src'
           ENVIRONMENT: staging
           TARGET_LOCALES: es,fr,pt
-          MAKIMA_API_KEY: ${{ secrets.MAKIMA_API_KEY }}
-          MAKIMA_API_BASE: ${{ vars.MAKIMA_API_BASE }}
+          ROSETTA_API_TOKEN: ${{ secrets.ROSETTA_API_TOKEN }}
+          ROSETTA_API_BASE: ${{ vars.ROSETTA_API_BASE }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -317,7 +324,7 @@ The same bin can be run locally for a dry run after `npx deriv-extract-translati
 
 ```bash
 PROJECT_NAME=my-project ENVIRONMENT=staging TARGET_LOCALES=es,fr,pt \
-MAKIMA_API_BASE=https://… MAKIMA_API_KEY=… DRY_RUN=true npx deriv-makima-sync
+ROSETTA_API_BASE=https://translation-api.deriv.ai ROSETTA_API_TOKEN=… DRY_RUN=true npx deriv-makima-sync
 ```
 
 ## Contributing

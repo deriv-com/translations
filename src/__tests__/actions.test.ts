@@ -68,10 +68,17 @@ describe.each(["extract_and_sync_translations", "extract_and_sync_translations_m
   });
 });
 
-describe("the Makima action", () => {
+describe("the Rosetta (formerly Makima) action", () => {
   it("runs the sync from its own commit", () => {
     expect(stepsOf("extract_and_sync_translations_makima")).toContain(scriptRun("deriv-makima-sync"));
     expect(existsSync(repoFile("src/scripts/deriv-makima-sync.cjs"))).toBe(true);
+  });
+
+  it("passes the Rosetta inputs, and the deprecated Makima ones, to the sync", () => {
+    const steps = stepsOf("extract_and_sync_translations_makima");
+    for (const name of ["ROSETTA_API_TOKEN", "ROSETTA_API_BASE", "MAKIMA_API_KEY", "MAKIMA_API_BASE"]) {
+      expect(steps).toContain(`${name}: \${{ inputs.${name} }}`);
+    }
   });
 });
 
