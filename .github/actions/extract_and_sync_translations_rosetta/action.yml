@@ -14,24 +14,12 @@ inputs:
   TARGET_LOCALES:
     description: "Comma-separated locale codes to translate into, e.g. es,fr,pt"
     required: true
-  # Not `required: true` only so the deprecated MAKIMA_* inputs still work for
-  # one release; the sync fails when neither name is set.
   ROSETTA_API_TOKEN:
-    description: "Bearer token for the Rosetta translation API, created at rosetta.deriv.ai (secret). Required unless the deprecated MAKIMA_API_KEY is set"
-    required: false
-    default: ""
+    description: "Bearer token for the Rosetta translation API, created at rosetta.deriv.ai (secret)"
+    required: true
   ROSETTA_API_BASE:
-    description: "Base URL of the Rosetta API, e.g. https://translation-api.deriv.ai (no default, so a consumer always names the host it sends the token to). Required unless the deprecated MAKIMA_API_BASE is set"
-    required: false
-    default: ""
-  MAKIMA_API_KEY:
-    description: "Deprecated: use ROSETTA_API_TOKEN. Read only when ROSETTA_API_TOKEN is empty"
-    required: false
-    default: ""
-  MAKIMA_API_BASE:
-    description: "Deprecated: use ROSETTA_API_BASE, which must be the Rosetta host. Read only when ROSETTA_API_BASE is empty"
-    required: false
-    default: ""
+    description: "Base URL of the Rosetta API, e.g. https://translation-api.deriv.ai (no default, so a consumer always names the host it sends the token to)"
+    required: true
   CDN_BASE_URL:
     description: "Where the current catalogues are served from; used as the translation memory"
     required: false
@@ -91,7 +79,8 @@ runs:
       with:
         node-version: "20"
     # Fail on a missing or wrong setting before installing and extracting.
-    # The sync's own readEnv is the check, so the rules live in one place.
+    # GitHub does not enforce `required` on action inputs, so the sync's own
+    # readEnv is the check, and the rules live in one place.
     - name: Check the sync settings
       shell: bash
       env:
@@ -100,11 +89,9 @@ runs:
         TARGET_LOCALES: ${{ inputs.TARGET_LOCALES }}
         ROSETTA_API_TOKEN: ${{ inputs.ROSETTA_API_TOKEN }}
         ROSETTA_API_BASE: ${{ inputs.ROSETTA_API_BASE }}
-        MAKIMA_API_KEY: ${{ inputs.MAKIMA_API_KEY }}
-        MAKIMA_API_BASE: ${{ inputs.MAKIMA_API_BASE }}
         FALLBACK_ENVIRONMENT: ${{ inputs.FALLBACK_ENVIRONMENT }}
         FALLBACK_MODE: ${{ inputs.FALLBACK_MODE }}
-      run: node -e 'require(process.argv[1]).readEnv(process.env)' "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-makima-sync.cjs"
+      run: node -e 'require(process.argv[1]).readEnv(process.env)' "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-rosetta-sync.cjs"
     # Both scripts run from this action's own commit, and the extractor's
     # dependencies come from that commit's lockfile, so pinning the action also
     # pins the translation code that runs with the API key.
@@ -129,8 +116,6 @@ runs:
         TARGET_LOCALES: ${{ inputs.TARGET_LOCALES }}
         ROSETTA_API_TOKEN: ${{ inputs.ROSETTA_API_TOKEN }}
         ROSETTA_API_BASE: ${{ inputs.ROSETTA_API_BASE }}
-        MAKIMA_API_KEY: ${{ inputs.MAKIMA_API_KEY }}
-        MAKIMA_API_BASE: ${{ inputs.MAKIMA_API_BASE }}
         CDN_BASE_URL: ${{ inputs.CDN_BASE_URL }}
         PROTECTED_TERMS_FILE: ${{ inputs.PROTECTED_TERMS_FILE }}
         FALLBACK_ENVIRONMENT: ${{ inputs.FALLBACK_ENVIRONMENT }}
@@ -139,7 +124,7 @@ runs:
         DRY_RUN: ${{ inputs.DRY_RUN }}
         TRANSLATIONS_DIR: translations
       # Node built-ins only, so it needs nothing installed.
-      run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-makima-sync.cjs"
+      run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-rosetta-sync.cjs"
     - name: Upload catalogues as an artifact (dry run)
       if: ${{ inputs.DRY_RUN == 'true' }}
       uses: actions/upload-artifact@v4

@@ -4,7 +4,7 @@
 "use strict";
 
 /**
- * deriv-makima-sync — translate the extracted `translations/en.json` with the
+ * deriv-rosetta-sync — translate the extracted `translations/en.json` with the
  * Rosetta gateway and write one `translations/<locale>.json` per target locale,
  * in the same shape the Crowdin-based action produced, so the runtime
  * (`initializeI18n`, which fetches `<cdnUrl>/translations/<lang>.json` and looks
@@ -37,9 +37,6 @@
  *   PROTECTED_TERMS_FILE (optional JSON array of strings), FALLBACK_ENVIRONMENT,
  *   FALLBACK_MODE, OVERRIDES_FILE (all optional), TRANSLATIONS_DIR
  *   (default ./translations), REFERENCE (default "<project>/<env>/<GITHUB_SHA>").
- *
- * MAKIMA_API_KEY and MAKIMA_API_BASE, the names from before Makima was replaced
- * by Rosetta, are still read when the ROSETTA_* name is unset, with a warning.
  *
  * The API key is read from the environment and never written to any log.
  *
@@ -102,7 +99,7 @@ const LANGUAGES = [
  * it builds the URL, so matching is case-insensitive; the file is always
  * written with the lower-case code.
  */
-function makimaNameFor(code) {
+function languageNameFor(code) {
   const wanted = String(code).trim().toLowerCase();
   const codesOf = (l) => [l.code, ...(l.aliases || [])];
   const hit = LANGUAGES.find((l) => codesOf(l).some((c) => c.toLowerCase() === wanted));
@@ -376,14 +373,14 @@ function resolveOverrides(raw, { en, locales, protectedTerms = [], file = "the o
   }
   const keyByEnglish = new Map(Object.entries(en).map(([key, english]) => [english, key]));
   // Matched by language, so "zh-CN" in the file reaches a run that targets "zh_cn".
-  const targeted = new Map(locales.map((l) => [makimaNameFor(l), l]));
+  const targeted = new Map(locales.map((l) => [languageNameFor(l), l]));
   const byLocale = Object.fromEntries(locales.map((l) => [l, {}]));
   const codeByLanguage = new Map();
   const stale = [];
   const ignoredLocales = [];
   const problems = [];
   for (const [code, entries] of Object.entries(raw)) {
-    const language = makimaNameFor(code); // throws on a typo'd locale code
+    const language = languageNameFor(code); // throws on a typo'd locale code
     if (codeByLanguage.has(language)) {
       problems.push(`"${codeByLanguage.get(language)}" and "${code}" both name ${language}; merge them into one`);
       continue;
@@ -633,7 +630,7 @@ async function fetchPrevious({ fetchImpl, cdnBase, project, environment, locale,
   return json;
 }
 
-function buildSummary({ project, environment, reference, status, perLocale, makimaErrors, dryRun, fallbackEnvironment, fallbackMode, overrides }) {
+function buildSummary({ project, environment, reference, status, perLocale, rosettaErrors, dryRun, fallbackEnvironment, fallbackMode, overrides }) {
   const lines = [];
   lines.push(`## Rosetta translation sync — ${project} / ${environment}${dryRun ? " (dry run)" : ""}`);
   lines.push("");
@@ -681,7 +678,7 @@ function buildSummary({ project, environment, reference, status, perLocale, maki
       lines.push(`- **${k.locale}** \`${k.key}\` — ${k.reason}: ${JSON.stringify(k.english)}`);
     }
   }
-  const errs = Object.entries(makimaErrors || {});
+  const errs = Object.entries(rosettaErrors || {});
   if (errs.length) {
     lines.push("");
     lines.push("### Rosetta errors");
@@ -700,31 +697,22 @@ const isSet = (value) => value !== undefined && value !== null && String(value).
 /** Hosts of the sunset Makima gateway; a Rosetta token must never be sent there. */
 const MAKIMA_HOSTS = ["pedro-api-dev.deriv.ai"];
 
-/**
- * Read the token and the base URL. The MAKIMA_* names they replaced are read
- * only when neither ROSETTA_* name is set, so a half-migrated configuration
- * cannot pair a new token with an old base. Each `legacy` is `{ from, to }`
- * when the old name was used.
- */
+/** Read the token and the base URL, refusing a base that still points at Makima. */
 function readCredentials(env) {
-  const useLegacy = !isSet(env.ROSETTA_API_TOKEN) && !isSet(env.ROSETTA_API_BASE);
-  const pick = (name, legacyName) => {
-    const from = useLegacy && isSet(env[legacyName]) ? legacyName : name;
-    if (!isSet(env[from])) throw new Error(`${name} is required`);
-    // Trimmed: a secret pasted with a trailing newline is not a valid header value.
-    return { value: String(env[from]).trim(), legacy: from === name ? null : { from, to: name } };
-  };
-  const token = pick("ROSETTA_API_TOKEN", "MAKIMA_API_KEY");
-  const base = pick("ROSETTA_API_BASE", "MAKIMA_API_BASE");
-  const baseName = base.legacy ? base.legacy.from : "ROSETTA_API_BASE";
+  for (const name of ["ROSETTA_API_TOKEN", "ROSETTA_API_BASE"]) {
+    if (!isSet(env[name])) throw new Error(`${name} is required`);
+  }
+  // Trimmed: a secret pasted with a trailing newline is not a valid header value.
+  const token = String(env.ROSETTA_API_TOKEN).trim();
+  const base = String(env.ROSETTA_API_BASE).trim();
   let url;
   try {
-    url = new URL(base.value);
+    url = new URL(base);
   } catch {
-    throw new Error(`${baseName} must be a URL, got "${base.value}"`);
+    throw new Error(`ROSETTA_API_BASE must be a URL, got "${base}"`);
   }
   if (MAKIMA_HOSTS.includes(url.hostname) || /\/makima\b/i.test(url.pathname)) {
-    throw new Error(`${baseName} points at the sunset Makima gateway (${url.host}); set ROSETTA_API_BASE to the Rosetta host, https://translation-api.deriv.ai`);
+    throw new Error(`ROSETTA_API_BASE points at the sunset Makima gateway (${url.host}); set it to the Rosetta host, https://translation-api.deriv.ai`);
   }
   return { token, base };
 }
@@ -765,9 +753,8 @@ function readEnv(env) {
     project,
     environment,
     locales,
-    apiKey: token.value,
-    base: base.value.replace(/\/$/, ""),
-    legacyNames: [token.legacy, base.legacy].filter(Boolean),
+    apiKey: token,
+    base: base.replace(/\/$/, ""),
     cdnBase: env.CDN_BASE_URL || "https://translations.deriv.com",
     dryRun: /^(1|true|yes)$/i.test(String(env.DRY_RUN || "")),
     translationsDir: path.resolve(env.TRANSLATIONS_DIR || "./translations"),
@@ -795,9 +782,6 @@ async function main(env = process.env, io = {}) {
   const sleep = io.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const log = io.log || ((m) => console.log(m));
   const cfg = readEnv(env);
-  for (const { from, to } of cfg.legacyNames) {
-    log(`::warning::${from} is deprecated; set ${to} instead. The base must be the Rosetta host (https://translation-api.deriv.ai), not the Makima one.`);
-  }
 
   // The API key is never logged, not even derived from: the gateway records its
   // own per-caller fingerprint, which is enough to attribute a call.
@@ -807,7 +791,7 @@ async function main(env = process.env, io = {}) {
   if (!fs.existsSync(enPath)) throw new Error(`${enPath} not found — run deriv-extract-translations first`);
   const en = JSON.parse(fs.readFileSync(enPath, "utf8"));
   const protectedTerms = loadProtectedTerms(cfg.protectedTermsFile);
-  const targetNames = cfg.locales.map(makimaNameFor);
+  const targetNames = cfg.locales.map(languageNameFor);
   const overrides = cfg.overridesFile
     ? resolveOverrides(JSON.parse(fs.readFileSync(cfg.overridesFile, "utf8")), { en, locales: cfg.locales, protectedTerms, file: cfg.overridesFile })
     : null;
@@ -848,13 +832,13 @@ async function main(env = process.env, io = {}) {
 
   let status = "noop";
   let results = {};
-  let makimaErrors = {};
+  let rosettaErrors = {};
   let failedKeys = {};
   if (union.size > 0) {
     const out = await translateContent({ content, targetNames, reference: cfg.reference, fetchImpl, base: cfg.base, apiKey: cfg.apiKey, sleep, log });
     status = out.status;
     results = out.results;
-    makimaErrors = out.errors;
+    rosettaErrors = out.errors;
     failedKeys = out.failedKeys;
   } else {
     log("Nothing new to translate — every key already has a value");
@@ -867,7 +851,7 @@ async function main(env = process.env, io = {}) {
   fs.mkdirSync(cfg.translationsDir, { recursive: true });
   const perLocale = [];
   for (const locale of cfg.locales) {
-    const languageName = makimaNameFor(locale);
+    const languageName = languageNameFor(locale);
     const plan = plans[locale];
     const merged = mergeLocale({
       en,
@@ -875,10 +859,10 @@ async function main(env = process.env, io = {}) {
       translated: results[languageName],
       tokensByKey,
       failedKeys: failedKeys[languageName],
-      failureMessage: makimaErrors[languageName],
+      failureMessage: rosettaErrors[languageName],
     });
     fs.writeFileSync(path.join(cfg.translationsDir, localeFileName(locale)), JSON.stringify(merged.catalogue));
-    const note = makimaErrors[languageName] ? "Rosetta failed this language for some or all chunks; those keys are left out and retried next run" : "";
+    const note = rosettaErrors[languageName] ? "Rosetta failed this language for some or all chunks; those keys are left out and retried next run" : "";
     perLocale.push({ locale, ...merged, rejectedFallback: plan.rejectedFallback, note });
   }
 
@@ -895,7 +879,7 @@ async function main(env = process.env, io = {}) {
     reference: cfg.reference,
     status,
     perLocale,
-    makimaErrors,
+    rosettaErrors,
     dryRun: cfg.dryRun,
     fallbackEnvironment: cfg.fallbackEnvironment,
     fallbackMode: cfg.fallbackMode,
@@ -904,7 +888,7 @@ async function main(env = process.env, io = {}) {
   log(summary);
   if (cfg.summaryFile) fs.appendFileSync(cfg.summaryFile, `${summary}\n`);
   // Surface problems as workflow annotations, not only in the summary table.
-  if (status === "partial") log(`::warning::Rosetta returned a partial result for ${cfg.project}/${cfg.environment}: ${Object.keys(makimaErrors).join(", ")} — see the job summary`);
+  if (status === "partial") log(`::warning::Rosetta returned a partial result for ${cfg.project}/${cfg.environment}: ${Object.keys(rosettaErrors).join(", ")} — see the job summary`);
   if (keptBackTotal > 0) log(`::warning::${keptBackTotal} string(s) were kept out of the ${cfg.project}/${cfg.environment} catalogues because a placeholder, marker or protected term did not survive translation — see the job summary`);
   if (overrides && overrides.stale.length) log(`::warning::${overrides.stale.length} override(s) in ${cfg.overridesFile} name English text that is no longer extracted — see the job summary`);
   appendOutput(cfg.outputFile, [
@@ -919,7 +903,7 @@ async function main(env = process.env, io = {}) {
 
 /** Small file helpers for tests; the test runner has no Node type definitions. */
 const testSupport = {
-  makeTempDir(prefix = "makima-sync-") {
+  makeTempDir(prefix = "rosetta-sync-") {
     return fs.mkdtempSync(path.join(require("os").tmpdir(), prefix));
   },
   writeJson(file, value) {
@@ -937,7 +921,7 @@ const testSupport = {
 
 module.exports = {
   LANGUAGES,
-  makimaNameFor,
+  languageNameFor,
   localeFileName,
   protect,
   restore,

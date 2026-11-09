@@ -187,9 +187,8 @@ jobs:
 ## Syncing translations with Rosetta
 
 Crowdin is being decommissioned in favour of the internal Rosetta translation
-API (`rosetta.deriv.ai`), which replaced the Makima gateway. The action and
-the bin keep their Makima names: `extract_and_sync_translations_makima` is a
-drop-in sibling of the
+API (`rosetta.deriv.ai`), which replaced the Makima gateway.
+`extract_and_sync_translations_rosetta` is a drop-in sibling of the
 Crowdin action: it runs the same extractor and uploads the same
 `translations/<locale>.json` files to the same R2 folder, so the runtime needs
 no change. Only the middle step differs — new strings are translated by Rosetta
@@ -260,10 +259,6 @@ The action takes the following inputs:
   LiteLLM key; it is shown only once.
 - `ROSETTA_API_BASE`: base URL of the Rosetta API, `https://translation-api.deriv.ai`.
   Required, with no default, so a consumer always names the host it sends the token to.
-- `MAKIMA_API_KEY`, `MAKIMA_API_BASE`: deprecated names for the two above, read
-  with a warning only when neither Rosetta input is set, so a new token is never
-  paired with an old base. Makima is sunset on 18 Nov 2026: a base pointing at
-  the Makima gateway fails the run before anything is installed.
 - `CDN_BASE_URL`: where the current catalogues are served (default `https://translations.deriv.com`).
 - `PROTECTED_TERMS_FILE`: optional path to a JSON array of strings that must never be translated.
 - `FALLBACK_ENVIRONMENT`: optional `staging` or `production`, another environment whose catalogue is consulted before Rosetta. Must differ from `ENVIRONMENT`.
@@ -278,11 +273,24 @@ check), `from_fallback` (values taken from `FALLBACK_ENVIRONMENT`) and
 `overridden` (values `OVERRIDES_FILE` changed or added; an override already
 published counts as reused).
 
-Pin the action to a release commit by SHA (`…_makima@<sha> # v1.x.y`) rather
+Pin the action to a release commit by SHA (`…_rosetta@<sha> # v1.x.y`) rather
 than `@master`. Both actions run their scripts from their own commit, with
 dependencies from that commit's `package-lock.json`, and never install
 `@deriv-com/translations` from npm. So the pin also covers the extractor and
 the sync that runs with `ROSETTA_API_TOKEN`, not only the action's steps.
+
+### Moving from the Makima action
+
+Up to v1.6.1 this action was `extract_and_sync_translations_makima`, with the
+`MAKIMA_API_KEY` and `MAKIMA_API_BASE` inputs and the `deriv-makima-sync` bin.
+Makima is sunset on 18 Nov 2026. To move, change the `uses:` path to
+`extract_and_sync_translations_rosetta` pinned to a newer release, pass
+`ROSETTA_API_TOKEN` (create it at rosetta.deriv.ai) and `ROSETTA_API_BASE`
+(`https://translation-api.deriv.ai`), and run a dry run first. A base that
+still points at the Makima gateway fails the run before anything is installed.
+A repo that loads the script directly should load `src/scripts/deriv-rosetta-sync.cjs`,
+where `makimaNameFor` is now `languageNameFor` and `buildSummary` takes
+`rosettaErrors` instead of `makimaErrors`.
 
 ### Example usage of the Rosetta action in the workflow file:
 
@@ -299,7 +307,7 @@ on:
 # Two runs reading the same CDN snapshot would both upload, last writer wins;
 # serialise them.
 concurrency:
-  group: sync-translations-makima
+  group: sync-translations-rosetta
   cancel-in-progress: false
 
 jobs:
@@ -307,7 +315,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Sync translations
-        uses: deriv-com/translations/.github/actions/extract_and_sync_translations_makima@master
+        uses: deriv-com/translations/.github/actions/extract_and_sync_translations_rosetta@master
         with:
           PROJECT_NAME: ${{ vars.R2_PROJECT_NAME }}
           PROJECT_SOURCE_DIRECTORY: './src'
@@ -325,7 +333,7 @@ The same bin can be run locally for a dry run after `npx deriv-extract-translati
 
 ```bash
 PROJECT_NAME=my-project ENVIRONMENT=staging TARGET_LOCALES=es,fr,pt \
-ROSETTA_API_BASE=https://translation-api.deriv.ai ROSETTA_API_TOKEN=… DRY_RUN=true npx deriv-makima-sync
+ROSETTA_API_BASE=https://translation-api.deriv.ai ROSETTA_API_TOKEN=… DRY_RUN=true npx deriv-rosetta-sync
 ```
 
 ## Contributing

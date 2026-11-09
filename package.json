@@ -8,13 +8,13 @@
   "types": "./dist/index.d.ts",
   "bin": {
     "deriv-extract-translations": "./dist/deriv-extract-translations.cjs",
-    "deriv-makima-sync": "./dist/deriv-makima-sync.cjs"
+    "deriv-rosetta-sync": "./dist/deriv-rosetta-sync.cjs"
   },
   "private": false,
   "version": "1.2.4",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && cp ./src/scripts/deriv-extract-translations.cjs ./dist/deriv-extract-translations.cjs && cp ./src/scripts/deriv-makima-sync.cjs ./dist/deriv-makima-sync.cjs",
+    "build": "tsc && vite build && cp ./src/scripts/deriv-extract-translations.cjs ./dist/deriv-extract-translations.cjs && cp ./src/scripts/deriv-rosetta-sync.cjs ./dist/deriv-rosetta-sync.cjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest ./src/__tests__/",
     "prepublish": "npm run test && npm run build"
