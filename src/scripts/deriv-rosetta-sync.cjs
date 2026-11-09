@@ -716,7 +716,9 @@ function parseBase(raw) {
   if (url.protocol !== "https:") {
     throw new Error(`ROSETTA_API_BASE must be an https URL such as ${BASE_EXAMPLE}`);
   }
-  if (MAKIMA_HOSTS.includes(url.hostname) || /\/makima\b/i.test(url.pathname)) {
+  // A trailing dot names the same host ("example.com." is "example.com").
+  const host = url.hostname.replace(/\.$/, "").toLowerCase();
+  if (MAKIMA_HOSTS.includes(host) || /\/makima\b/i.test(url.pathname)) {
     throw new Error(`ROSETTA_API_BASE points at the sunset Makima gateway; set it to the Rosetta host, ${BASE_EXAMPLE}`);
   }
   if (!/^\/*$/.test(url.pathname) || url.search || url.hash || url.username || url.password) {
@@ -758,12 +760,14 @@ function readEnv(env) {
     .map((s) => s.trim())
     .filter(Boolean);
   if (!locales.length) throw new Error("TARGET_LOCALES must list at least one locale code");
-  locales.forEach(languageNameFor); // throws on a typo'd code before anything is installed or extracted
+  // Resolved once here, so a typo'd code fails before anything is installed or extracted.
+  const languageNames = new Map(locales.map((code) => [code, languageNameFor(code)]));
   const project = String(env.PROJECT_NAME).trim();
   return {
     project,
     environment,
     locales,
+    languageNames,
     apiKey: token,
     base,
     cdnBase: env.CDN_BASE_URL || "https://translations.deriv.com",
@@ -802,7 +806,7 @@ async function main(env = process.env, io = {}) {
   if (!fs.existsSync(enPath)) throw new Error(`${enPath} not found — run deriv-extract-translations first`);
   const en = JSON.parse(fs.readFileSync(enPath, "utf8"));
   const protectedTerms = loadProtectedTerms(cfg.protectedTermsFile);
-  const targetNames = cfg.locales.map(languageNameFor);
+  const targetNames = cfg.locales.map((code) => cfg.languageNames.get(code));
   const overrides = cfg.overridesFile
     ? resolveOverrides(JSON.parse(fs.readFileSync(cfg.overridesFile, "utf8")), { en, locales: cfg.locales, protectedTerms, file: cfg.overridesFile })
     : null;
@@ -862,7 +866,7 @@ async function main(env = process.env, io = {}) {
   fs.mkdirSync(cfg.translationsDir, { recursive: true });
   const perLocale = [];
   for (const locale of cfg.locales) {
-    const languageName = languageNameFor(locale);
+    const languageName = cfg.languageNames.get(locale);
     const plan = plans[locale];
     const merged = mergeLocale({
       en,

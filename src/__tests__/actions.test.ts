@@ -90,13 +90,31 @@ describe("the Rosetta action", () => {
   });
 });
 
-describe("the retired Makima action path", () => {
-  it("only fails with a pointer to the Rosetta action, and runs nothing else", () => {
-    const steps = stepsOf("extract_and_sync_translations_makima");
-    expect(steps).toMatch(/::error::extract_and_sync_translations_makima is retired/);
+describe("the deprecated Makima action path", () => {
+  const steps = stepsOf("extract_and_sync_translations_makima");
+
+  it("warns and points to the Rosetta action", () => {
+    expect(steps).toMatch(/::warning::extract_and_sync_translations_makima is deprecated/);
     expect(steps).toContain("extract_and_sync_translations_rosetta");
-    expect(steps).toMatch(/^\s*exit 1\s*$/m);
-    expect(steps).not.toMatch(/\b(uses|npm|node)\b/);
+  });
+
+  it("runs only the released v1.6.1 Makima action, pinned by commit", () => {
+    const uses = [...steps.matchAll(/^\s*uses:\s*(\S+)/gm)].map((m) => m[1]);
+    expect(uses).toEqual([
+      "deriv-com/translations/.github/actions/extract_and_sync_translations_makima@fad07f6ff87b00b498332a7c7ddd63640d680975",
+    ]);
+    expect(steps).not.toMatch(/\b(npm|node)\b/);
+  });
+});
+
+describe("the retired deriv-makima-sync bin", () => {
+  it("is still declared, so npx cannot fetch a registry package of that name, and only fails with a pointer", () => {
+    const { bin } = JSON.parse(read("package.json")) as { bin: Record<string, string> };
+    expect(bin["deriv-makima-sync"]).toBe("./dist/deriv-makima-sync.cjs");
+    const stub = read("src/scripts/deriv-makima-sync.cjs");
+    expect(stub).toContain("deriv-rosetta-sync");
+    expect(stub).toMatch(/process\.exit\(1\)/);
+    expect(requiresOf("deriv-makima-sync.cjs")).toEqual([]);
   });
 });
 

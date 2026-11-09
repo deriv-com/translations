@@ -66,6 +66,7 @@ interface SyncModule {
   readEnv(env: Env): {
     locales: string[];
     dryRun: boolean;
+    languageNames: Map<string, string>;
     apiKey: string;
     base: string;
     reference: string;
@@ -523,6 +524,7 @@ describe("configuration and summary", () => {
       expect((error as Error).message).not.toContain(base.trim());
     };
     bad("https://pedro-api-dev.deriv.ai", /points at the sunset Makima gateway/);
+    bad("https://PEDRO-API-DEV.deriv.ai./", /points at the sunset Makima gateway/); // trailing dot, any case
     bad("https://gw.test/api/makima", /points at the sunset Makima gateway/);
     bad("http://rosetta.test", /must be an https URL/);
     bad("rosetta.test:443", /must be an https URL/); // parses with protocol "rosetta.test:"
@@ -534,8 +536,9 @@ describe("configuration and summary", () => {
     expect(sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: " https://rosetta.test// " }).base).toBe("https://rosetta.test");
   });
 
-  it("rejects an unknown locale code before anything runs", () => {
+  it("resolves each locale code to its language name once, and rejects an unknown code before anything runs", () => {
     expect(() => sync.readEnv({ ...baseEnv, TARGET_LOCALES: "es,ptbr" })).toThrow(/Unknown locale "ptbr"/);
+    expect([...sync.readEnv(baseEnv).languageNames]).toEqual([["es", "Spanish"], ["fr", "French"], ["pt", "Portuguese"]]);
   });
 
   it("trims the token, so a secret pasted with a trailing newline still works", () => {

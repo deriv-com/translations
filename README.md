@@ -289,7 +289,9 @@ folder, pass `ROSETTA_API_TOKEN` (create it at rosetta.deriv.ai) and
 `ROSETTA_API_BASE` (`https://translation-api.deriv.ai`, the host only), and run
 a dry run first. The settings are checked before anything is installed: the
 base must be an https host with no path, and the Makima gateway is refused.
-For one release the old path still exists, but only fails with a pointer here.
+Until Makima is switched off on 18 Nov 2026, the old path still works: it runs
+the v1.6.1 action and warns. After that it fails with a pointer here, and the
+`deriv-makima-sync` bin already only fails with a pointer to `deriv-rosetta-sync`.
 A repo that loads the script directly should load `src/scripts/deriv-rosetta-sync.cjs`,
 where `makimaNameFor` is now `languageNameFor` and `buildSummary` takes
 `rosettaErrors` instead of `makimaErrors`.
@@ -317,7 +319,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Sync translations
-        uses: deriv-com/translations/.github/actions/extract_and_sync_translations_rosetta@master
+        # Pin the release commit; never @master (see above).
+        uses: deriv-com/translations/.github/actions/extract_and_sync_translations_rosetta@<release-commit-sha> # v1.x.y
         with:
           PROJECT_NAME: ${{ vars.R2_PROJECT_NAME }}
           PROJECT_SOURCE_DIRECTORY: './src'
