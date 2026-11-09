@@ -76,7 +76,7 @@ describe("the Rosetta action", () => {
 
   it("checks the sync settings with the sync's own readEnv before installing anything", () => {
     const steps = stepsOf("extract_and_sync_translations_rosetta");
-    const check = steps.indexOf(`node -e 'require(process.argv[1]).readEnv(process.env)' "$GITHUB_ACTION_PATH/${UP_TO_ROOT}/src/scripts/deriv-rosetta-sync.cjs"`);
+    const check = steps.indexOf(`${scriptRun("deriv-rosetta-sync")} --check-settings`);
     expect(check).toBeGreaterThan(-1);
     expect(check).toBeLessThan(steps.indexOf("npm ci"));
   });
@@ -87,6 +87,16 @@ describe("the Rosetta action", () => {
       expect(steps).toContain(`${name}: \${{ inputs.${name} }}`);
     }
     expect(steps).not.toMatch(/MAKIMA/);
+  });
+});
+
+describe("the retired Makima action path", () => {
+  it("only fails with a pointer to the Rosetta action, and runs nothing else", () => {
+    const steps = stepsOf("extract_and_sync_translations_makima");
+    expect(steps).toMatch(/::error::extract_and_sync_translations_makima is retired/);
+    expect(steps).toContain("extract_and_sync_translations_rosetta");
+    expect(steps).toMatch(/^\s*exit 1\s*$/m);
+    expect(steps).not.toMatch(/\b(uses|npm|node)\b/);
   });
 });
 

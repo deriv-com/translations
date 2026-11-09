@@ -510,10 +510,32 @@ describe("configuration and summary", () => {
     expect(() => sync.readEnv({ ...retired, ROSETTA_API_TOKEN: "k" })).toThrow(/ROSETTA_API_BASE is required/);
   });
 
-  it("rejects a base that points at the Makima gateway, or is not a URL", () => {
-    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: "http://pedro-api-dev.deriv.ai" })).toThrow(/ROSETTA_API_BASE points at the sunset Makima gateway/);
-    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: "https://gw.test/api/makima" })).toThrow(/points at the sunset Makima gateway/);
-    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: "translation-api.deriv.ai" })).toThrow(/ROSETTA_API_BASE must be a URL/);
+  it("accepts only an https host as the base, and never echoes the value", () => {
+    const bad = (base: string, message: RegExp) => {
+      let error: unknown;
+      try {
+        sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: base });
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(message);
+      expect((error as Error).message).not.toContain(base.trim());
+    };
+    bad("https://pedro-api-dev.deriv.ai", /points at the sunset Makima gateway/);
+    bad("https://gw.test/api/makima", /points at the sunset Makima gateway/);
+    bad("http://rosetta.test", /must be an https URL/);
+    bad("rosetta.test:443", /must be an https URL/); // parses with protocol "rosetta.test:"
+    bad("sk-not-a-url-token", /must be an https URL/);
+    bad("https://rosetta.test/v1", /must be the host only/);
+    bad("https://rosetta.test/?x=1", /must be the host only/);
+    bad("https://user:pw@rosetta.test", /must be the host only/);
+    // The origin is used, so trailing slashes never double up in the request URL.
+    expect(sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: " https://rosetta.test// " }).base).toBe("https://rosetta.test");
+  });
+
+  it("rejects an unknown locale code before anything runs", () => {
+    expect(() => sync.readEnv({ ...baseEnv, TARGET_LOCALES: "es,ptbr" })).toThrow(/Unknown locale "ptbr"/);
   });
 
   it("trims the token, so a secret pasted with a trailing newline still works", () => {

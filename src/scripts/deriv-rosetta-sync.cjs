@@ -697,33 +697,43 @@ const isSet = (value) => value !== undefined && value !== null && String(value).
 /** Hosts of the sunset Makima gateway; a Rosetta token must never be sent there. */
 const MAKIMA_HOSTS = ["pedro-api-dev.deriv.ai"];
 
-/** Read the token and the base URL, refusing a base that still points at Makima. */
-function readCredentials(env) {
-  for (const name of ["ROSETTA_API_TOKEN", "ROSETTA_API_BASE"]) {
+const BASE_EXAMPLE = "https://translation-api.deriv.ai";
+
+/**
+ * Parse ROSETTA_API_BASE into the origin requests are sent to. The token goes
+ * to this host, so it must be https, carry no path, query or fragment (the
+ * client adds `/v1/translate` itself), and not be the sunset Makima gateway.
+ * Errors never echo the value: a token wired into this input by mistake must
+ * not reach the log.
+ */
+function parseBase(raw) {
+  let url;
+  try {
+    url = new URL(String(raw).trim());
+  } catch {
+    throw new Error(`ROSETTA_API_BASE must be an https URL such as ${BASE_EXAMPLE}`);
+  }
+  if (url.protocol !== "https:") {
+    throw new Error(`ROSETTA_API_BASE must be an https URL such as ${BASE_EXAMPLE}`);
+  }
+  if (MAKIMA_HOSTS.includes(url.hostname) || /\/makima\b/i.test(url.pathname)) {
+    throw new Error(`ROSETTA_API_BASE points at the sunset Makima gateway; set it to the Rosetta host, ${BASE_EXAMPLE}`);
+  }
+  if (!/^\/*$/.test(url.pathname) || url.search || url.hash || url.username || url.password) {
+    throw new Error(`ROSETTA_API_BASE must be the host only, such as ${BASE_EXAMPLE}, with no path (the sync adds /v1/translate), query or credentials`);
+  }
+  return url.origin;
+}
+
+function readEnv(env) {
+  // ROSETTA_API_BASE is deliberately required, with no default, so a consumer
+  // always names the host it sends the token to.
+  for (const name of ["PROJECT_NAME", "ENVIRONMENT", "TARGET_LOCALES", "ROSETTA_API_TOKEN", "ROSETTA_API_BASE"]) {
     if (!isSet(env[name])) throw new Error(`${name} is required`);
   }
   // Trimmed: a secret pasted with a trailing newline is not a valid header value.
   const token = String(env.ROSETTA_API_TOKEN).trim();
-  const base = String(env.ROSETTA_API_BASE).trim();
-  let url;
-  try {
-    url = new URL(base);
-  } catch {
-    throw new Error(`ROSETTA_API_BASE must be a URL, got "${base}"`);
-  }
-  if (MAKIMA_HOSTS.includes(url.hostname) || /\/makima\b/i.test(url.pathname)) {
-    throw new Error(`ROSETTA_API_BASE points at the sunset Makima gateway (${url.host}); set it to the Rosetta host, https://translation-api.deriv.ai`);
-  }
-  return { token, base };
-}
-
-function readEnv(env) {
-  for (const name of ["PROJECT_NAME", "ENVIRONMENT", "TARGET_LOCALES"]) {
-    if (!isSet(env[name])) throw new Error(`${name} is required`);
-  }
-  // The base is deliberately required, with no default, so a consumer always
-  // names the host it sends the token to.
-  const { token, base } = readCredentials(env);
+  const base = parseBase(env.ROSETTA_API_BASE);
   const environments = ["staging", "production"];
   const environment = String(env.ENVIRONMENT).trim();
   if (!environments.includes(environment)) {
@@ -748,13 +758,14 @@ function readEnv(env) {
     .map((s) => s.trim())
     .filter(Boolean);
   if (!locales.length) throw new Error("TARGET_LOCALES must list at least one locale code");
+  locales.forEach(languageNameFor); // throws on a typo'd code before anything is installed or extracted
   const project = String(env.PROJECT_NAME).trim();
   return {
     project,
     environment,
     locales,
     apiKey: token,
-    base: base.replace(/\/$/, ""),
+    base,
     cdnBase: env.CDN_BASE_URL || "https://translations.deriv.com",
     dryRun: /^(1|true|yes)$/i.test(String(env.DRY_RUN || "")),
     translationsDir: path.resolve(env.TRANSLATIONS_DIR || "./translations"),
@@ -944,7 +955,10 @@ module.exports = {
 };
 
 if (require.main === module) {
-  main().catch((err) => {
+  // `--check-settings` validates the environment only; the action runs it
+  // before installing dependencies and extracting, so a bad setting fails first.
+  const run = process.argv.includes("--check-settings") ? async () => readEnv(process.env) : () => main();
+  run().catch((err) => {
     console.error(`✗ ${err && err.message ? err.message : err}`);
     process.exit(1);
   });

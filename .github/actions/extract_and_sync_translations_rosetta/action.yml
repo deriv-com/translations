@@ -91,7 +91,7 @@ runs:
         ROSETTA_API_BASE: ${{ inputs.ROSETTA_API_BASE }}
         FALLBACK_ENVIRONMENT: ${{ inputs.FALLBACK_ENVIRONMENT }}
         FALLBACK_MODE: ${{ inputs.FALLBACK_MODE }}
-      run: node -e 'require(process.argv[1]).readEnv(process.env)' "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-rosetta-sync.cjs"
+      run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-rosetta-sync.cjs" --check-settings
     # Both scripts run from this action's own commit, and the extractor's
     # dependencies come from that commit's lockfile, so pinning the action also
     # pins the translation code that runs with the API key.

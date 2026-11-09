@@ -281,13 +281,15 @@ the sync that runs with `ROSETTA_API_TOKEN`, not only the action's steps.
 
 ### Moving from the Makima action
 
-Up to v1.6.1 this action was `extract_and_sync_translations_makima`, with the
-`MAKIMA_API_KEY` and `MAKIMA_API_BASE` inputs and the `deriv-makima-sync` bin.
-Makima is sunset on 18 Nov 2026. To move, change the `uses:` path to
-`extract_and_sync_translations_rosetta` pinned to a newer release, pass
-`ROSETTA_API_TOKEN` (create it at rosetta.deriv.ai) and `ROSETTA_API_BASE`
-(`https://translation-api.deriv.ai`), and run a dry run first. A base that
-still points at the Makima gateway fails the run before anything is installed.
+Before this rename the action was `extract_and_sync_translations_makima`, with
+the `MAKIMA_API_KEY` and `MAKIMA_API_BASE` inputs and the `deriv-makima-sync`
+bin. Makima is sunset on 18 Nov 2026. To move, change the `uses:` path to
+`extract_and_sync_translations_rosetta`, pinned to a release that contains that
+folder, pass `ROSETTA_API_TOKEN` (create it at rosetta.deriv.ai) and
+`ROSETTA_API_BASE` (`https://translation-api.deriv.ai`, the host only), and run
+a dry run first. The settings are checked before anything is installed: the
+base must be an https host with no path, and the Makima gateway is refused.
+For one release the old path still exists, but only fails with a pointer here.
 A repo that loads the script directly should load `src/scripts/deriv-rosetta-sync.cjs`,
 where `makimaNameFor` is now `languageNameFor` and `buildSummary` takes
 `rosettaErrors` instead of `makimaErrors`.

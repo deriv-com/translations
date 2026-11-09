@@ -1,0 +1,13 @@
+name: "Extract and sync translations (Makima, retired)"
+description: "Retired: Makima is sunset on 18 Nov 2026. Fails with a pointer to extract_and_sync_translations_rosetta"
+# Kept for one release so a workflow still on this path fails with a clear
+# message instead of "Can't find action.yml". Remove in the next release.
+# It takes no inputs; GitHub only warns about the ones a caller still passes.
+runs:
+  using: composite
+  steps:
+    - name: Point to the Rosetta action
+      shell: bash
+      run: |
+        echo "::error::extract_and_sync_translations_makima is retired: Makima is sunset on 18 Nov 2026. Use deriv-com/translations/.github/actions/extract_and_sync_translations_rosetta, pinned to a release that has it, with the ROSETTA_API_TOKEN and ROSETTA_API_BASE inputs (https://translation-api.deriv.ai). See the README section 'Moving from the Makima action'."
+        exit 1
