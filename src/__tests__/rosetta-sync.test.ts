@@ -35,7 +35,7 @@ type Env = Record<string, string | undefined>;
 
 interface SyncModule {
   LANGUAGES: { code: string; name: string; aliases?: string[] }[];
-  makimaNameFor(code: string): string;
+  languageNameFor(code: string): string;
   localeFileName(code: string): string;
   protect(text: string, terms?: string[]): { text: string; tokens: Token[] };
   restore(translated: string, tokens: Token[], source: string): { ok: boolean; text: string; reason: string | null };
@@ -66,6 +66,8 @@ interface SyncModule {
   readEnv(env: Env): {
     locales: string[];
     dryRun: boolean;
+    languageNames: Map<string, string>;
+    apiKey: string;
     base: string;
     reference: string;
     fallbackEnvironment: string | null;
@@ -88,7 +90,7 @@ interface SyncModule {
       rejectedFallback?: KeptBack[];
       note?: string;
     }[];
-    makimaErrors: Record<string, string>;
+    rosettaErrors: Record<string, string>;
     dryRun: boolean;
     fallbackEnvironment?: string | null;
     fallbackMode?: string;
@@ -111,7 +113,7 @@ interface SyncModule {
 // it has no type declarations; Vite's interop exposes module.exports as the
 // default export.
 // @ts-expect-error -- untyped .cjs module, typed locally through SyncModule
-const loaded: unknown = await import("../scripts/deriv-makima-sync.cjs");
+const loaded: unknown = await import("../scripts/deriv-rosetta-sync.cjs");
 const sync = (((loaded as { default?: unknown }).default ?? loaded) as SyncModule);
 
 const byteLength = (text: string): number => new TextEncoder().encode(text).length;
@@ -120,25 +122,25 @@ const jsonResponse = (status: number, body: unknown, headers: Record<string, str
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
 
 describe("locale mapping", () => {
-  it("maps the project's locale codes to Makima language names", () => {
-    expect(sync.makimaNameFor("es")).toBe("Spanish");
-    expect(sync.makimaNameFor("FR")).toBe("French");
-    expect(sync.makimaNameFor("pt")).toBe("Portuguese");
+  it("maps the project's locale codes to Rosetta language names", () => {
+    expect(sync.languageNameFor("es")).toBe("Spanish");
+    expect(sync.languageNameFor("FR")).toBe("French");
+    expect(sync.languageNameFor("pt")).toBe("Portuguese");
     expect(sync.LANGUAGES).toHaveLength(39);
   });
 
   it("rejects an unknown code and lower-cases the file name", () => {
-    expect(() => sync.makimaNameFor("xx")).toThrow(/Unknown locale "xx"/);
+    expect(() => sync.languageNameFor("xx")).toThrow(/Unknown locale "xx"/);
     expect(sync.localeFileName("ES")).toBe("es.json");
   });
 
   it("accepts the runtime's zh_cn / zh_tw spellings and keeps them as the file name", () => {
-    expect(sync.makimaNameFor("zh_cn")).toBe("Simplified Chinese");
-    expect(sync.makimaNameFor("ZH_TW")).toBe("Traditional Chinese");
-    expect(sync.makimaNameFor("zh-CN")).toBe("Simplified Chinese");
-    expect(sync.makimaNameFor("zh-Hant-TW")).toBe("Traditional Chinese");
+    expect(sync.languageNameFor("zh_cn")).toBe("Simplified Chinese");
+    expect(sync.languageNameFor("ZH_TW")).toBe("Traditional Chinese");
+    expect(sync.languageNameFor("zh-CN")).toBe("Simplified Chinese");
+    expect(sync.languageNameFor("zh-Hant-TW")).toBe("Traditional Chinese");
     expect(sync.localeFileName("ZH_CN")).toBe("zh_cn.json");
-    expect(() => sync.makimaNameFor("xx")).toThrow(/zh-CN, zh_cn, zh-Hant-TW, zh_tw/);
+    expect(() => sync.languageNameFor("xx")).toThrow(/zh-CN, zh_cn, zh-Hant-TW, zh_tw/);
   });
 });
 
@@ -167,7 +169,7 @@ describe("token protection", () => {
     expect(sync.restore(text.replace("items", "elementos"), tokens, source)).toMatchObject({ ok: true, text: "{{count, number}} elementos, {{- raw}} and $t(common.ok)" });
   });
 
-  it("accepts the self-closing and spaced forms Makima may emit", () => {
+  it("accepts the self-closing and spaced forms Rosetta may emit", () => {
     const source = "Hello {{name}}";
     const { tokens } = sync.protect(source);
     expect(sync.restore('Hola <ph i="0"/>', tokens, source).ok).toBe(true);
@@ -223,7 +225,7 @@ describe("delta and merge", () => {
     expect(merged.keptBack).toEqual([{ key: "b", english: "Beta {{n}}", reason: expect.stringMatching(/placeholders/) }]);
   });
 
-  it("keeps back a key Makima did not return, and a key whose chunk failed", () => {
+  it("keeps back a key Rosetta did not return, and a key whose chunk failed", () => {
     const plan = sync.planLocale(en, {});
     const merged = sync.mergeLocale({
       en,
@@ -235,8 +237,8 @@ describe("delta and merge", () => {
     });
     expect(Object.keys(merged.catalogue)).toEqual(["a"]);
     expect(merged.keptBack).toEqual([
-      { key: "b", english: "Beta {{n}}", reason: "not returned by Makima" },
-      { key: "c", english: "Gamma", reason: "language failed in Makima: upstream 500" },
+      { key: "b", english: "Beta {{n}}", reason: "not returned by Rosetta" },
+      { key: "c", english: "Gamma", reason: "language failed in Rosetta: upstream 500" },
     ]);
   });
 });
@@ -425,11 +427,11 @@ describe("submit → poll", () => {
       if (polls === 2) return jsonResponse(200, { job_id: "job-1", status: "running" });
       return jsonResponse(200, { job_id: "job-1", status: "completed", results: { Spanish: { k1: "Hola" }, French: { k1: "Bonjour" } }, errors: null });
     };
-    const out = await sync.translateContent({ content: { k1: "Hello" }, targetNames: ["Spanish", "French"], reference: "proj/staging/abc", fetchImpl, base: "https://makima.test", apiKey: "secret", sleep: noSleep });
+    const out = await sync.translateContent({ content: { k1: "Hello" }, targetNames: ["Spanish", "French"], reference: "proj/staging/abc", fetchImpl, base: "https://rosetta.test", apiKey: "secret", sleep: noSleep });
     expect(out.status).toBe("completed");
     expect(out.results).toEqual({ Spanish: { k1: "Hola" }, French: { k1: "Bonjour" } });
     expect(out.failedKeys).toEqual({});
-    expect(calls[0]).toBe("POST https://makima.test/api/makima/translate");
+    expect(calls[0]).toBe("POST https://rosetta.test/v1/translate");
     expect(calls.filter((c) => c.startsWith("GET"))).toHaveLength(3);
   });
 
@@ -438,7 +440,7 @@ describe("submit → poll", () => {
       init?.method === "POST"
         ? jsonResponse(202, { job_id: "job-2", status: "queued" })
         : jsonResponse(200, { job_id: "job-2", status: "partial", results: { Spanish: { k1: "Hola" } }, errors: { French: "No valid JSON translation produced" } });
-    const out = await sync.translateContent({ content: { k1: "Hello" }, targetNames: ["Spanish", "French"], reference: "r", fetchImpl, base: "https://makima.test", apiKey: "secret", sleep: noSleep });
+    const out = await sync.translateContent({ content: { k1: "Hello" }, targetNames: ["Spanish", "French"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "secret", sleep: noSleep });
     expect(out.status).toBe("partial");
     expect(out.results.French).toBeUndefined();
     expect(out.errors).toEqual({ French: "No valid JSON translation produced" });
@@ -461,12 +463,51 @@ describe("submit → poll", () => {
     // translateContent submits two jobs: {a, b} → job-1 (ok) and {c} → job-2 (fails).
     const big = (ch: string) => ch.repeat(150 * 1024);
     const content = { a: big("a"), b: big("b"), c: big("c") };
-    const out = await sync.translateContent({ content, targetNames: ["French"], reference: "r", fetchImpl, base: "https://makima.test", apiKey: "s", sleep: noSleep });
+    const out = await sync.translateContent({ content, targetNames: ["French"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", sleep: noSleep });
     expect(posts).toBe(2);
     expect(out.status).toBe("partial");
     expect(out.results.French).toEqual({ a: "A-fr", b: "B-fr" }); // chunk 1 kept
     expect([...out.failedKeys.French]).toEqual(["c"]); // only chunk 2's key retried next run
     expect(out.errors).toEqual({ French: "boom" });
+  });
+
+  it("reports a Cloudflare block in one line with the Ray ID, not the HTML page", async () => {
+    const page = "<!DOCTYPE html><title>Attention Required! | Cloudflare</title><p>Sorry, you have been blocked</p>" + "x".repeat(5000);
+    const blocked: FetchLike = async () =>
+      new Response(page, { status: 403, headers: { "Content-Type": "text/html; charset=UTF-8", "cf-ray": "a57c3a92cf2c14cc-FRA" } });
+    const run = sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl: blocked, base: "https://rosetta.test", apiKey: "s", sleep: noSleep });
+    const error = await run.then(() => null, (e: Error) => e);
+    expect(error?.message).toBe(
+      "Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID a57c3a92cf2c14cc): this runner's network is not on the Rosetta allow-list. Run the sync on an allow-listed runner (see the README)."
+    );
+  });
+
+  it("does not blame the allow-list for an outage page, a wrong host, or a response without headers", async () => {
+    const run = (fetchImpl: FetchLike) =>
+      sync
+        .translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", sleep: noSleep })
+        .then(() => null, (e: Error) => e);
+    const page = "<!DOCTYPE html><title>rosetta.test | 522: Connection timed out</title>" + "z".repeat(5000);
+    const outage = await run(async () => new Response(page, { status: 522, headers: { "Content-Type": "text/html", "cf-ray": "8f00aa11bb22cc33-FRA" } }));
+    expect(outage?.message).toMatch(/^Rosetta submit failed with HTTP 522 \(Ray ID 8f00aa11bb22cc33\): \{"raw":"<!DOCTYPE html>.*…"\}$/);
+    expect(outage?.message).not.toMatch(/allow-list/);
+    const wrongHost = await run(async () => new Response("<html>Not found</html>", { status: 404, headers: { "Content-Type": "text/html", "cf-ray": "1234567890abcdef-AMS" } }));
+    expect(wrongHost?.message).toMatch(/failed with HTTP 404 \(Ray ID 1234567890abcdef\)/);
+    const bare = await run(async () => ({ status: 400, text: async () => "bad request" }) as unknown as Response);
+    expect(bare?.message).toBe('Rosetta submit failed with HTTP 400: {"raw":"bad request"}');
+  });
+
+  it("keeps Rosetta's JSON error as it is, and cuts any other non-JSON body short", async () => {
+    const json: FetchLike = async () => jsonResponse(401, { error: { code: "UNAUTHENTICATED", message: "Invalid API key." } });
+    await expect(sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl: json, base: "https://rosetta.test", apiKey: "s", sleep: noSleep })).rejects.toThrow(
+      'Rosetta submit failed with HTTP 401: {"error":{"code":"UNAUTHENTICATED","message":"Invalid API key."}}'
+    );
+    const text: FetchLike = async () => new Response("y".repeat(1000), { status: 400, headers: { "Content-Type": "text/plain" } });
+    const error = await sync
+      .translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl: text, base: "https://rosetta.test", apiKey: "s", sleep: noSleep })
+      .then(() => null, (e: Error) => e);
+    expect(error?.message.length).toBeLessThan(400);
+    expect(error?.message).toMatch(/failed with HTTP 400: \{"raw":"y+…"\}/);
   });
 
   it("retries a 429 on submit and fails loudly on a failed job", async () => {
@@ -479,27 +520,68 @@ describe("submit → poll", () => {
       }
       return jsonResponse(200, { job_id: "job-3", status: "failed", error: "upstream down" });
     };
-    await expect(sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://makima.test", apiKey: "s", sleep })).rejects.toThrow(/job job-3 failed: "upstream down"/);
+    await expect(sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", sleep })).rejects.toThrow(/job job-3 failed: "upstream down"/);
     expect(posts).toBe(2);
     expect(sleep).toHaveBeenCalledWith(1000);
   });
 });
 
 describe("configuration and summary", () => {
-  const baseEnv: Env = { PROJECT_NAME: "deriv-blox", ENVIRONMENT: "staging", TARGET_LOCALES: " es, fr ,pt ", MAKIMA_API_KEY: "k", MAKIMA_API_BASE: "https://makima.test/", GITHUB_SHA: "abc123" };
+  const baseEnv: Env = { PROJECT_NAME: "deriv-blox", ENVIRONMENT: "staging", TARGET_LOCALES: " es, fr ,pt ", ROSETTA_API_TOKEN: "k", ROSETTA_API_BASE: "https://rosetta.test/", GITHUB_SHA: "abc123" };
 
   it("reads the action's environment and derives the defaults", () => {
     const cfg = sync.readEnv(baseEnv);
     expect(cfg.locales).toEqual(["es", "fr", "pt"]);
     expect(cfg.dryRun).toBe(false);
-    expect(cfg.base).toBe("https://makima.test");
+    expect(cfg.base).toBe("https://rosetta.test");
     expect(cfg.reference).toBe("deriv-blox/staging/abc123");
   });
 
   it("requires the key and the base URL, and rejects an unknown environment", () => {
-    expect(() => sync.readEnv({ ...baseEnv, MAKIMA_API_KEY: undefined })).toThrow(/MAKIMA_API_KEY is required/);
-    expect(() => sync.readEnv({ ...baseEnv, MAKIMA_API_BASE: undefined })).toThrow(/MAKIMA_API_BASE is required/);
+    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_TOKEN: undefined })).toThrow(/ROSETTA_API_TOKEN is required/);
+    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: undefined })).toThrow(/ROSETTA_API_BASE is required/);
     expect(() => sync.readEnv({ ...baseEnv, ENVIRONMENT: "qa" })).toThrow(/ENVIRONMENT must be/);
+  });
+
+  it("does not read the retired MAKIMA_* names", () => {
+    // The action passes "" for an input the caller left out.
+    const retired = { ...baseEnv, ROSETTA_API_TOKEN: "", ROSETTA_API_BASE: "", MAKIMA_API_KEY: "old", MAKIMA_API_BASE: "https://old.test" };
+    expect(() => sync.readEnv(retired)).toThrow(/ROSETTA_API_TOKEN is required/);
+    expect(() => sync.readEnv({ ...retired, ROSETTA_API_TOKEN: "k" })).toThrow(/ROSETTA_API_BASE is required/);
+  });
+
+  it("accepts only an https host as the base, and never echoes the value", () => {
+    const bad = (base: string, message: RegExp) => {
+      let error: unknown;
+      try {
+        sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: base });
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(message);
+      expect((error as Error).message).not.toContain(base.trim());
+    };
+    bad("https://pedro-api-dev.deriv.ai", /points at the sunset Makima gateway/);
+    bad("https://PEDRO-API-DEV.deriv.ai./", /points at the sunset Makima gateway/); // trailing dot, any case
+    bad("https://gw.test/api/makima", /points at the sunset Makima gateway/);
+    bad("http://rosetta.test", /must be an https URL/);
+    bad("rosetta.test:443", /must be an https URL/); // parses with protocol "rosetta.test:"
+    bad("sk-not-a-url-token", /must be an https URL/);
+    bad("https://rosetta.test/v1", /must be the host only/);
+    bad("https://rosetta.test/?x=1", /must be the host only/);
+    bad("https://user:pw@rosetta.test", /must be the host only/);
+    // The origin is used, so trailing slashes never double up in the request URL.
+    expect(sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: " https://rosetta.test// " }).base).toBe("https://rosetta.test");
+  });
+
+  it("resolves each locale code to its language name once, and rejects an unknown code before anything runs", () => {
+    expect(() => sync.readEnv({ ...baseEnv, TARGET_LOCALES: "es,ptbr" })).toThrow(/Unknown locale "ptbr"/);
+    expect([...sync.readEnv(baseEnv).languageNames]).toEqual([["es", "Spanish"], ["fr", "French"], ["pt", "Portuguese"]]);
+  });
+
+  it("trims the token, so a secret pasted with a trailing newline still works", () => {
+    expect(sync.readEnv({ ...baseEnv, ROSETTA_API_TOKEN: " k\n" }).apiKey).toBe("k");
   });
 
   it("reads the fallback and overrides settings and rejects inconsistent ones", () => {
@@ -522,9 +604,9 @@ describe("configuration and summary", () => {
       status: "partial",
       perLocale: [
         { locale: "es", reused: 10, added: 2, pruned: 1, keptBack: [{ key: "k9", english: "Hi {{x}}", reason: "placeholders do not match the source" }] },
-        { locale: "fr", reused: 10, added: 0, pruned: 1, keptBack: [], note: "Makima failed this language" },
+        { locale: "fr", reused: 10, added: 0, pruned: 1, keptBack: [], note: "Rosetta failed this language" },
       ],
-      makimaErrors: { French: "boom" },
+      rosettaErrors: { French: "boom" },
       dryRun: true,
     });
     expect(text).toContain("(dry run)");
@@ -544,7 +626,7 @@ describe("configuration and summary", () => {
       perLocale: [
         { locale: "fr", reused: 7, added: 1, pruned: 0, keptBack: [], fromFallback: 3, overridden: 2, rejectedFallback: [{ key: "k5", english: "Hi {{x}}", reason: "placeholders do not match the source" }] },
       ],
-      makimaErrors: {},
+      rosettaErrors: {},
       dryRun: false,
       fallbackEnvironment: "staging",
       fallbackMode: "missing",
@@ -562,7 +644,7 @@ describe("configuration and summary", () => {
 
 describe("main(): end to end against a temp directory and a mocked gateway", () => {
   const { makeTempDir, writeJson, readJson, readText, join } = sync.testSupport;
-  const dirOf = () => makeTempDir("makima-overrides-");
+  const dirOf = () => makeTempDir("rosetta-overrides-");
 
   function setup(en: Record<string, string>, terms?: string[]) {
     const dir = makeTempDir();
@@ -571,8 +653,8 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
       PROJECT_NAME: "proj",
       ENVIRONMENT: "staging",
       TARGET_LOCALES: "es,fr",
-      MAKIMA_API_KEY: "secret",
-      MAKIMA_API_BASE: "https://makima.test",
+      ROSETTA_API_TOKEN: "secret",
+      ROSETTA_API_BASE: "https://rosetta.test",
       CDN_BASE_URL: "https://cdn.test",
       TRANSLATIONS_DIR: join(dir, "translations"),
       GITHUB_OUTPUT: join(dir, "output.txt"),
@@ -619,6 +701,22 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
     expect(readJson(join(dir, "translations", "fr.json"))).toEqual({ a: "Alpha-fr", b: "Ouvrir {{name}} dans Deriv MCP", c: "Gamma-fr" });
     expect(readText(join(dir, "output.txt"))).toBe("status=completed\nkept_back=0\ntranslated=3\nfrom_fallback=0\noverridden=0\n");
     expect(readText(join(dir, "summary.md"))).toContain("| es | 1 | 2 | 1 | 0 |");
+    expect(logs.join("\n")).not.toContain("secret");
+  });
+
+  it("submits to /v1/translate and polls /v1/translate/{job_id} on the configured base", async () => {
+    const { env } = setup({ a: "Alpha" });
+    const logs: string[] = [];
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      if (url.startsWith("https://cdn.test/")) return new Response("", { status: 404 });
+      calls.push(`${init?.method || "GET"} ${url}`);
+      if (init?.method === "POST") return jsonResponse(202, { job_id: "job-11", status: "queued" });
+      return jsonResponse(200, { status: "completed", results: { Spanish: { a: "Alfa" }, French: { a: "Alpha-fr" } }, errors: null });
+    };
+    const result = await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: (m) => logs.push(m) });
+    expect(result.status).toBe("completed");
+    expect(calls).toEqual(["POST https://rosetta.test/v1/translate", "GET https://rosetta.test/v1/translate/job-11"]);
     expect(logs.join("\n")).not.toContain("secret");
   });
 
@@ -673,7 +771,7 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
     expect(readJson(join(dir, "translations", "fr.json"))).toEqual({});
     expect(result.keptBackTotal).toBe(3); // es:b broken, fr:a and fr:b failed
     expect(readText(join(dir, "output.txt"))).toContain("status=partial\nkept_back=3\n");
-    expect(logs.some((l) => l.startsWith("::warning::Makima returned a partial result"))).toBe(true);
+    expect(logs.some((l) => l.startsWith("::warning::Rosetta returned a partial result"))).toBe(true);
     expect(logs.some((l) => l.startsWith("::warning::3 string(s) were kept out"))).toBe(true);
   });
 
@@ -759,7 +857,7 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
       return { dir, env, fetchImpl, cdnUrls, sent };
     }
 
-    it("takes the keys production lacks from staging, checks them, and sends only the rest to Makima", async () => {
+    it("takes the keys production lacks from staging, checks them, and sends only the rest to Rosetta", async () => {
       const { dir, env, fetchImpl, cdnUrls, sent } = productionSetup();
       const logs: string[] = [];
       const result = await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: (m) => logs.push(m) });
@@ -769,7 +867,7 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
         "https://cdn.test/proj/production/translations/fr.json",
         "https://cdn.test/proj/staging/translations/fr.json",
       ]);
-      // es:c is on staging but lost its placeholder there, so Makima translates it.
+      // es:c is on staging but lost its placeholder there, so Rosetta translates it.
       expect(sent).toEqual([["c", "d"]]);
       expect(readJson(join(dir, "translations", "es.json"))).toEqual({ a: "Alfa-prod", b: "Beta-stg", c: "Gama {{n}}", d: "1 Cambio" });
       expect(readJson(join(dir, "translations", "fr.json"))).toEqual({ a: "Alpha-prod", b: "Beta-stg-fr", c: "Gamma-fr {{n}}", d: "1 Modifier" });
@@ -796,7 +894,7 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
       expect(logs.some((l) => l.startsWith("::warning::1 override(s)"))).toBe(true);
     });
 
-    it("fails before calling Makima when an override breaks a placeholder", async () => {
+    it("fails before calling Rosetta when an override breaks a placeholder", async () => {
       const { env, fetchImpl, sent } = productionSetup({ OVERRIDES_FILE: join(dirOf(), "bad-overrides.json") });
       writeJson(env.OVERRIDES_FILE as string, { es: { "Gamma {{n}}": "Gama" } });
       await expect(sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: () => {} })).rejects.toThrow(/placeholders do not match/);

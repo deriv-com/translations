@@ -1,103 +1,92 @@
-name: "Extract and sync translations (Makima)"
-description: "Extract localize() strings, translate the new ones with the Makima gateway, and upload the catalogues to Cloudflare R2"
+name: "Extract and sync translations (Makima, deprecated)"
+description: "Deprecated: runs the v1.6.1 Makima action until Makima's sunset on 18 Nov 2026. Move to extract_and_sync_translations_rosetta"
+# Kept so a workflow still on this path keeps working until Makima is switched
+# off: it runs the released v1.6.1 action, pinned by commit, and warns. Planned:
+# the first release after 18 Nov 2026 replaces this with a step that only fails
+# with a pointer, and a later release removes the path. The inputs and outputs
+# are v1.6.1's.
 inputs:
   PROJECT_NAME:
-    description: "Project name — the R2 folder the runtime reads from (same as the Crowdin action)"
+    description: "Project name, the R2 folder the runtime reads from"
     required: true
   PROJECT_SOURCE_DIRECTORY:
     description: "Source directory to extract strings from"
     required: false
     default: "src"
   ENVIRONMENT:
-    description: "staging or production — the R2 sub-folder (what CROWDIN_BRANCH_NAME was for)"
+    description: "staging or production"
     required: true
   TARGET_LOCALES:
-    description: "Comma-separated locale codes to translate into, e.g. es,fr,pt"
+    description: "Comma-separated locale codes, e.g. es,fr,pt"
     required: true
   MAKIMA_API_KEY:
-    description: "Bearer token for the Makima translation gateway (secret)"
+    description: "Bearer token for the Makima gateway (secret)"
     required: true
   MAKIMA_API_BASE:
-    description: "Base URL of the Makima API, as given by the platform team (required: no default, so no consumer silently relies on a dev host)"
+    description: "Base URL of the Makima API"
     required: true
   CDN_BASE_URL:
-    description: "Where the current catalogues are served from; used as the translation memory"
+    description: "Where the current catalogues are served from"
     required: false
     default: "https://translations.deriv.com"
   PROTECTED_TERMS_FILE:
-    description: "Optional path (in the consumer repo) to a JSON array of terms that must never be translated, e.g. brand names"
+    description: "Optional JSON array of terms that must never be translated"
     required: false
     default: ""
   FALLBACK_ENVIRONMENT:
-    description: "Optional: staging or production, another environment whose CDN catalogue is consulted before Makima (e.g. staging for a production sync, so production takes the values QA reviewed instead of translating them again). Its values must pass the same token check as Makima's."
+    description: "Optional: staging or production, consulted before Makima"
     required: false
     default: ""
   FALLBACK_MODE:
-    description: "missing (default): use FALLBACK_ENVIRONMENT only for keys this environment lacks. prefer: its values also replace this environment's own, converging the two catalogues"
+    description: "missing (default) or prefer"
     required: false
     default: "missing"
   OVERRIDES_FILE:
-    description: 'Optional path (in the consumer repo) to reviewed corrections, shaped {"<locale>": {"<English source text>": "<translation>"}}. Applied last, in every environment; an entry that fails the token check fails the run'
+    description: "Optional path to reviewed corrections"
     required: false
     default: ""
   DRY_RUN:
-    description: "true: write the catalogues as a workflow artifact and skip the R2 upload"
+    description: "true: write the catalogues as an artifact and skip the R2 upload"
     required: false
     default: "false"
   R2_ACCOUNT_ID:
-    description: "R2 account ID from the Cloudflare R2 dashboard"
+    description: "R2 account ID"
     required: true
   R2_ACCESS_KEY_ID:
-    description: "R2 access key ID from the Cloudflare R2 dashboard"
+    description: "R2 access key ID"
     required: true
   R2_SECRET_ACCESS_KEY:
-    description: "R2 secret access key from the Cloudflare R2 dashboard"
+    description: "R2 secret access key"
     required: true
   R2_BUCKET_NAME:
-    description: "R2 bucket name from the Cloudflare R2 dashboard"
+    description: "R2 bucket name"
     required: true
 outputs:
   status:
-    description: "noop (the catalogues are unchanged), completed (new translations, or values changed by the fallback, overrides or pruning), or partial (a language failed; its file was left as the CDN had it)"
+    description: "noop, completed or partial"
     value: ${{ steps.sync.outputs.status }}
   kept_back:
-    description: "Number of strings left out because a placeholder, marker or protected term did not survive translation"
+    description: "Number of strings left out by the token check"
     value: ${{ steps.sync.outputs.kept_back }}
   from_fallback:
-    description: "Number of values taken from FALLBACK_ENVIRONMENT's catalogue (0 when it is not set)"
+    description: "Number of values taken from FALLBACK_ENVIRONMENT"
     value: ${{ steps.sync.outputs.from_fallback }}
   overridden:
-    description: "Number of values OVERRIDES_FILE changed or added (0 when it is not set; an override already published counts as reused)"
+    description: "Number of values OVERRIDES_FILE changed or added"
     value: ${{ steps.sync.outputs.overridden }}
 runs:
   using: composite
   steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    - name: Use Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: "20"
-    # Both scripts run from this action's own commit, and the extractor's
-    # dependencies come from that commit's lockfile, so pinning the action also
-    # pins the translation code that runs with the API key.
-    # Never `npm i @deriv-com/translations@latest` here: that runs whatever
-    # release is newest, whatever the consumer pinned. Never `npx <bin>` either:
-    # a missing bin makes npx fetch a registry package of that name.
-    - name: Install the extractor's dependencies
+    - name: Warn that Makima is being switched off
       shell: bash
-      working-directory: ${{ github.action_path }}/../../..
-      run: npm ci --omit=dev --omit=peer --omit=optional --ignore-scripts --no-audit --no-fund
-    - name: Run extract script
-      shell: bash
-      env:
-        PROJECT_SOURCE_DIRECTORY: ${{ inputs.PROJECT_SOURCE_DIRECTORY }}
-      run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-extract-translations.cjs" "$PROJECT_SOURCE_DIRECTORY" --verbose
-    - name: Translate new strings with Makima
+      run: echo "::warning::extract_and_sync_translations_makima is deprecated and stops working when Makima is switched off on 18 Nov 2026. Move to deriv-com/translations/.github/actions/extract_and_sync_translations_rosetta with ROSETTA_API_TOKEN and ROSETTA_API_BASE (https://translation-api.deriv.ai). See the README section 'Moving from the Makima action'."
+    - name: Run the v1.6.1 Makima action
       id: sync
-      shell: bash
-      env:
+      # The last release with the Makima client, pinned by commit.
+      uses: deriv-com/translations/.github/actions/extract_and_sync_translations_makima@fad07f6ff87b00b498332a7c7ddd63640d680975 # v1.6.1
+      with:
         PROJECT_NAME: ${{ inputs.PROJECT_NAME }}
+        PROJECT_SOURCE_DIRECTORY: ${{ inputs.PROJECT_SOURCE_DIRECTORY }}
         ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
         TARGET_LOCALES: ${{ inputs.TARGET_LOCALES }}
         MAKIMA_API_KEY: ${{ inputs.MAKIMA_API_KEY }}
@@ -108,33 +97,7 @@ runs:
         FALLBACK_MODE: ${{ inputs.FALLBACK_MODE }}
         OVERRIDES_FILE: ${{ inputs.OVERRIDES_FILE }}
         DRY_RUN: ${{ inputs.DRY_RUN }}
-        TRANSLATIONS_DIR: translations
-      # Node built-ins only, so it needs nothing installed.
-      run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-makima-sync.cjs"
-    - name: Upload catalogues as an artifact (dry run)
-      if: ${{ inputs.DRY_RUN == 'true' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: translations-${{ inputs.PROJECT_NAME }}-${{ inputs.ENVIRONMENT }}
-        path: translations/
-        retention-days: 14
-    - name: R2 Upload Action to upload translations to Cloudflare
-      if: ${{ inputs.DRY_RUN != 'true' }}
-      # Pinned to v1.5: this step handles the R2 credentials.
-      uses: ryand56/r2-upload-action@33ebb7a494b3a8a3c5ed2ea6bbdc72e707090317 # v1.5
-      with:
-        r2-account-id: ${{ inputs.R2_ACCOUNT_ID }}
-        r2-access-key-id: ${{ inputs.R2_ACCESS_KEY_ID }}
-        r2-secret-access-key: ${{ inputs.R2_SECRET_ACCESS_KEY }}
-        r2-bucket: ${{ inputs.R2_BUCKET_NAME }}
-        source-dir: translations
-        destination-dir: ./${{ inputs.PROJECT_NAME }}/${{ inputs.ENVIRONMENT }}/translations
-    - name: Fail the run if a language was left behind
-      # Runs after the upload on purpose: the locales that succeeded are already
-      # live, and the failed one kept its previous file, so the site is fine and
-      # the red run is the signal to re-run.
-      if: ${{ steps.sync.outputs.status == 'partial' }}
-      shell: bash
-      run: |
-        echo "::error::Makima returned a partial result — see the job summary for the language that failed. Re-run the workflow to retry it."
-        exit 1
+        R2_ACCOUNT_ID: ${{ inputs.R2_ACCOUNT_ID }}
+        R2_ACCESS_KEY_ID: ${{ inputs.R2_ACCESS_KEY_ID }}
+        R2_SECRET_ACCESS_KEY: ${{ inputs.R2_SECRET_ACCESS_KEY }}
+        R2_BUCKET_NAME: ${{ inputs.R2_BUCKET_NAME }}

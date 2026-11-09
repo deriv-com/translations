@@ -35,7 +35,7 @@ const scriptRun = (bin: string) => `node "$GITHUB_ACTION_PATH/${UP_TO_ROOT}/src/
 // npm ci runs this repo's prepublish (npm test && npm run build).
 const NPM_CI_FLAGS = ["--omit=dev", "--omit=peer", "--omit=optional", "--ignore-scripts"];
 
-describe.each(["extract_and_sync_translations", "extract_and_sync_translations_makima"])("the %s action", (action) => {
+describe.each(["extract_and_sync_translations", "extract_and_sync_translations_rosetta"])("the %s action", (action) => {
   const steps = stepsOf(action);
 
   it("never installs @deriv-com/translations from the registry", () => {
@@ -68,16 +68,65 @@ describe.each(["extract_and_sync_translations", "extract_and_sync_translations_m
   });
 });
 
-describe("the Makima action", () => {
+describe("the Rosetta action", () => {
   it("runs the sync from its own commit", () => {
-    expect(stepsOf("extract_and_sync_translations_makima")).toContain(scriptRun("deriv-makima-sync"));
-    expect(existsSync(repoFile("src/scripts/deriv-makima-sync.cjs"))).toBe(true);
+    expect(stepsOf("extract_and_sync_translations_rosetta")).toContain(scriptRun("deriv-rosetta-sync"));
+    expect(existsSync(repoFile("src/scripts/deriv-rosetta-sync.cjs"))).toBe(true);
+  });
+
+  it("checks the sync settings with the sync's own readEnv before installing anything", () => {
+    const steps = stepsOf("extract_and_sync_translations_rosetta");
+    const check = steps.indexOf(`${scriptRun("deriv-rosetta-sync")} --check-settings`);
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(steps.indexOf("npm ci"));
+  });
+
+  it("passes the Rosetta inputs to the sync, and no Makima ones", () => {
+    const steps = stepsOf("extract_and_sync_translations_rosetta");
+    for (const name of ["ROSETTA_API_TOKEN", "ROSETTA_API_BASE"]) {
+      expect(steps).toContain(`${name}: \${{ inputs.${name} }}`);
+    }
+    expect(steps).not.toMatch(/MAKIMA/);
+  });
+});
+
+describe("the deprecated Makima action path", () => {
+  const steps = stepsOf("extract_and_sync_translations_makima");
+
+  it("warns and points to the Rosetta action", () => {
+    expect(steps).toMatch(/::warning::extract_and_sync_translations_makima is deprecated/);
+    expect(steps).toContain("extract_and_sync_translations_rosetta");
+  });
+
+  it("runs only the released v1.6.1 Makima action, pinned by commit", () => {
+    const uses = [...steps.matchAll(/^\s*uses:\s*(\S+)/gm)].map((m) => m[1]);
+    expect(uses).toEqual([
+      "deriv-com/translations/.github/actions/extract_and_sync_translations_makima@fad07f6ff87b00b498332a7c7ddd63640d680975",
+    ]);
+    expect(steps).not.toMatch(/\b(npm|node)\b/);
+  });
+});
+
+describe("the retired deriv-makima-sync bin", () => {
+  it("is still declared, so npx cannot fetch a registry package of that name, and only fails with a pointer", () => {
+    const { bin } = JSON.parse(read("package.json")) as { bin: Record<string, string> };
+    expect(bin["deriv-makima-sync"]).toBe("./dist/deriv-makima-sync.cjs");
+    const stub = read("src/scripts/deriv-makima-sync.cjs");
+    expect(stub).toContain("deriv-rosetta-sync");
+    expect(stub).toMatch(/if \(require\.main === module\) \{[\s\S]*process\.exit\(1\);[\s\S]*\}/);
+    expect(requiresOf("deriv-makima-sync.cjs")).toEqual([]);
+  });
+
+  it("does nothing when it is only required", async () => {
+    // Exiting on require would kill a test runner or a tool that inspects bins.
+    // @ts-expect-error -- untyped .cjs module; only loading it is under test
+    await expect(import("../scripts/deriv-makima-sync.cjs")).resolves.toBeDefined();
   });
 });
 
 describe("what the scripts need installed", () => {
   it("the sync needs only Node built-ins, so it runs with nothing installed", () => {
-    const external = requiresOf("deriv-makima-sync.cjs").filter(
+    const external = requiresOf("deriv-rosetta-sync.cjs").filter(
       (name) => !builtinModules.includes(name.replace(/^node:/, "")),
     );
     expect(external).toEqual([]);
