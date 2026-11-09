@@ -1,4 +1,8 @@
 name: Release
+# npm publishes through trusted publishing (OIDC) only: no npm token. The
+# trusted publisher on npmjs.com is bound to this repository, this file name
+# (publish_npm_package.yml) and the Production environment. Renaming the file
+# or the environment breaks publishing until the npm entry is updated too.
 on:
     release:
         types: [published]
@@ -17,7 +21,7 @@ jobs:
       contents: write # to be able to publish a GitHub release
       issues: write # to be able to comment on released issues
       pull-requests: write # to be able to comment on released pull requests
-      id-token: write # to enable use of OIDC for npm provenance
+      id-token: write # required: npm trusted publishing (the only publish credential) and provenance
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -28,7 +32,7 @@ jobs:
         with:
           node-version: '22.14.0'
       - name: Install dependencies
-        run: npm install
+        run: npm ci
       - name: Verify the integrity of provenance attestations and registry signatures for installed dependencies
         run: npm audit signatures
       - name: Prepublish
