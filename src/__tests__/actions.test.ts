@@ -74,6 +74,13 @@ describe("the Rosetta (formerly Makima) action", () => {
     expect(existsSync(repoFile("src/scripts/deriv-makima-sync.cjs"))).toBe(true);
   });
 
+  it("checks the sync settings with the sync's own readEnv before installing anything", () => {
+    const steps = stepsOf("extract_and_sync_translations_makima");
+    const check = steps.indexOf(`node -e 'require(process.argv[1]).readEnv(process.env)' "$GITHUB_ACTION_PATH/${UP_TO_ROOT}/src/scripts/deriv-makima-sync.cjs"`);
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(steps.indexOf("npm ci"));
+  });
+
   it("passes the Rosetta inputs, and the deprecated Makima ones, to the sync", () => {
     const steps = stepsOf("extract_and_sync_translations_makima");
     for (const name of ["ROSETTA_API_TOKEN", "ROSETTA_API_BASE", "MAKIMA_API_KEY", "MAKIMA_API_BASE"]) {

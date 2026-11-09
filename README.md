@@ -261,8 +261,9 @@ The action takes the following inputs:
 - `ROSETTA_API_BASE`: base URL of the Rosetta API, `https://translation-api.deriv.ai`.
   Required, with no default, so a consumer always names the host it sends the token to.
 - `MAKIMA_API_KEY`, `MAKIMA_API_BASE`: deprecated names for the two above, read
-  only when the Rosetta one is empty, with a warning. Makima is sunset on
-  18 Nov 2026, so the base must point at Rosetta whichever name you use.
+  with a warning only when neither Rosetta input is set, so a new token is never
+  paired with an old base. Makima is sunset on 18 Nov 2026: a base pointing at
+  the Makima gateway fails the run before anything is installed.
 - `CDN_BASE_URL`: where the current catalogues are served (default `https://translations.deriv.com`).
 - `PROTECTED_TERMS_FILE`: optional path to a JSON array of strings that must never be translated.
 - `FALLBACK_ENVIRONMENT`: optional `staging` or `production`, another environment whose catalogue is consulted before Rosetta. Must differ from `ENVIRONMENT`.

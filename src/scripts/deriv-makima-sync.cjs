@@ -419,7 +419,10 @@ function resolveOverrides(raw, { en, locales, protectedTerms = [], file = "the o
 // Rosetta client (submit → poll)
 // ---------------------------------------------------------------------------
 
-/** Keep each job well under the 1,500,000-byte transport limit Makima documented (Rosetta kept its API). */
+/**
+ * Keep each job well under the 1,500,000-byte transport limit Makima
+ * documented. Rosetta's limit is not published yet; this assumes it is no lower.
+ */
 const MAX_CHUNK_BYTES = 400 * 1024;
 /** Per-request timeout; a hung socket must not stall the job for hours. */
 const FETCH_TIMEOUT_MS = 60 * 1000;
@@ -694,24 +697,45 @@ function appendOutput(file, lines) {
 
 const isSet = (value) => value !== undefined && value !== null && String(value).trim() !== "";
 
+/** Hosts of the sunset Makima gateway; a Rosetta token must never be sent there. */
+const MAKIMA_HOSTS = ["pedro-api-dev.deriv.ai"];
+
 /**
- * Read a ROSETTA_* setting, falling back to the MAKIMA_* name it replaced.
- * Returns `{ value, legacy }`; `legacy` is `{ from, to }` when the old name was used.
+ * Read the token and the base URL. The MAKIMA_* names they replaced are read
+ * only when neither ROSETTA_* name is set, so a half-migrated configuration
+ * cannot pair a new token with an old base. Each `legacy` is `{ from, to }`
+ * when the old name was used.
  */
-function readRenamed(env, name, legacyName) {
-  if (isSet(env[name])) return { value: String(env[name]), legacy: null };
-  if (isSet(env[legacyName])) return { value: String(env[legacyName]), legacy: { from: legacyName, to: name } };
-  throw new Error(`${name} is required`);
+function readCredentials(env) {
+  const useLegacy = !isSet(env.ROSETTA_API_TOKEN) && !isSet(env.ROSETTA_API_BASE);
+  const pick = (name, legacyName) => {
+    const from = useLegacy && isSet(env[legacyName]) ? legacyName : name;
+    if (!isSet(env[from])) throw new Error(`${name} is required`);
+    // Trimmed: a secret pasted with a trailing newline is not a valid header value.
+    return { value: String(env[from]).trim(), legacy: from === name ? null : { from, to: name } };
+  };
+  const token = pick("ROSETTA_API_TOKEN", "MAKIMA_API_KEY");
+  const base = pick("ROSETTA_API_BASE", "MAKIMA_API_BASE");
+  const baseName = base.legacy ? base.legacy.from : "ROSETTA_API_BASE";
+  let url;
+  try {
+    url = new URL(base.value);
+  } catch {
+    throw new Error(`${baseName} must be a URL, got "${base.value}"`);
+  }
+  if (MAKIMA_HOSTS.includes(url.hostname) || /\/makima\b/i.test(url.pathname)) {
+    throw new Error(`${baseName} points at the sunset Makima gateway (${url.host}); set ROSETTA_API_BASE to the Rosetta host, https://translation-api.deriv.ai`);
+  }
+  return { token, base };
 }
 
 function readEnv(env) {
   for (const name of ["PROJECT_NAME", "ENVIRONMENT", "TARGET_LOCALES"]) {
     if (!isSet(env[name])) throw new Error(`${name} is required`);
   }
-  const token = readRenamed(env, "ROSETTA_API_TOKEN", "MAKIMA_API_KEY");
   // The base is deliberately required, with no default, so a consumer always
   // names the host it sends the token to.
-  const base = readRenamed(env, "ROSETTA_API_BASE", "MAKIMA_API_BASE");
+  const { token, base } = readCredentials(env);
   const environments = ["staging", "production"];
   const environment = String(env.ENVIRONMENT).trim();
   if (!environments.includes(environment)) {
@@ -742,7 +766,7 @@ function readEnv(env) {
     environment,
     locales,
     apiKey: token.value,
-    base: base.value.trim().replace(/\/$/, ""),
+    base: base.value.replace(/\/$/, ""),
     legacyNames: [token.legacy, base.legacy].filter(Boolean),
     cdnBase: env.CDN_BASE_URL || "https://translations.deriv.com",
     dryRun: /^(1|true|yes)$/i.test(String(env.DRY_RUN || "")),

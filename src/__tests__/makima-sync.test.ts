@@ -517,6 +517,24 @@ describe("configuration and summary", () => {
     expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_TOKEN: "", MAKIMA_API_KEY: "" })).toThrow(/ROSETTA_API_TOKEN is required/);
   });
 
+  it("never pairs a Rosetta setting with a deprecated Makima one", () => {
+    // A new token must not be sent to an old base, nor an old token to a new base.
+    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: undefined, MAKIMA_API_BASE: "https://old.test" })).toThrow(/ROSETTA_API_BASE is required/);
+    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_TOKEN: undefined, MAKIMA_API_KEY: "old" })).toThrow(/ROSETTA_API_TOKEN is required/);
+  });
+
+  it("rejects a base that points at the Makima gateway, under either name", () => {
+    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: "http://pedro-api-dev.deriv.ai" })).toThrow(/ROSETTA_API_BASE points at the sunset Makima gateway/);
+    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: "https://gw.test/api/makima" })).toThrow(/points at the sunset Makima gateway/);
+    const legacy = { ...baseEnv, ROSETTA_API_TOKEN: undefined, ROSETTA_API_BASE: undefined, MAKIMA_API_KEY: "old", MAKIMA_API_BASE: "http://pedro-api-dev.deriv.ai" };
+    expect(() => sync.readEnv(legacy)).toThrow(/MAKIMA_API_BASE points at the sunset Makima gateway/);
+    expect(() => sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: "translation-api.deriv.ai" })).toThrow(/ROSETTA_API_BASE must be a URL/);
+  });
+
+  it("trims the token, so a secret pasted with a trailing newline still works", () => {
+    expect(sync.readEnv({ ...baseEnv, ROSETTA_API_TOKEN: " k\n" }).apiKey).toBe("k");
+  });
+
   it("reads the fallback and overrides settings and rejects inconsistent ones", () => {
     expect(sync.readEnv(baseEnv)).toMatchObject({ fallbackEnvironment: null, fallbackMode: "missing", overridesFile: null });
     // The action passes an empty string for an input the caller left out.
