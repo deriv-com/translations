@@ -183,6 +183,7 @@ describe("token protection", () => {
 
   it("decodes HTML entities the translator added, but only when the source had none", () => {
     expect(sync.restore("Pares &amp; opciones &lt;rápido&gt;", [], "Pairs & options <fast>")).toMatchObject({ ok: true, text: "Pares & opciones <rápido>" });
+    expect(sync.restore("Les éléments ne sont pas prêts&nbsp;: c&#x27;est &#8216;ok&#8217;", [], "Items aren't ready: it's 'ok'")).toMatchObject({ ok: true, text: "Les éléments ne sont pas prêts\u00a0: c'est \u2018ok\u2019" });
     // A source that already carries an entity is left exactly as returned.
     expect(sync.restore("Tom &amp; Jerry", [], "Tom &amp; Jerry")).toMatchObject({ ok: true, text: "Tom &amp; Jerry" });
   });
@@ -209,10 +210,13 @@ describe("token protection", () => {
     expect(sync.restore(text, tokens, source)).toMatchObject({ ok: true, text: source });
   });
 
-  it("fails closed on a token left in the pre-1.8.1 form", () => {
-    const source = "Open {{name}}";
-    const { tokens } = sync.protect(source);
-    expect(sync.restore('Abrir <ph i="0"></ph>', tokens, source)).toMatchObject({ ok: false });
+  it.each([
+    ["a placeholder", "Open {{name}}", [], 'Abrir <ph i="0"></ph>'],
+    ["a protected term", "Open Deriv MCP", ["Deriv MCP"], 'Abrir <pt i="0"></pt>'],
+    ["a marker", "Open <0>docs</0>", [], "Abrir <c0>docs</c0>"],
+  ])("fails closed on %s left without its x- prefix", (_label, source, terms, translated) => {
+    const { tokens } = sync.protect(source, terms);
+    expect(sync.restore(translated, tokens, source)).toMatchObject({ ok: false, reason: /protected token/ });
   });
 
   it("does not protect a term inside a longer word", () => {

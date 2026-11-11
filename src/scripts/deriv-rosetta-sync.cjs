@@ -127,8 +127,16 @@ function localeFileName(code) {
 // because the same regex builds the signature the token check compares.
 const PLACEHOLDER_RE = /\{\{-?\s*[^{}]+?\s*\}\}|\$t\([^()]*\)/g;
 const MARKER_RE = /<(\/?)(\d+)>/g;
-const ENTITY_RE = /&(amp|lt|gt|quot|#39|apos);/g;
-const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", apos: "'" };
+const ENTITY_RE = /&(amp|lt|gt|quot|apos|nbsp|#\d+|#x[0-9a-fA-F]+);/g;
+const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
+/** Decode one entity matched by ENTITY_RE (named, decimal or hex). */
+function decodeEntity(_m, name) {
+  if (name[0] !== "#") return ENTITIES[name];
+  const code = name[1] === "x" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+  return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : _m;
+}
+// Protection tags are custom elements (a hyphen in the name): see protect().
+const TAG = { ph: "x-ph", pt: "x-pt", marker: "x-c" };
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -172,16 +180,16 @@ function protect(text, protectedTerms = []) {
   const tokens = [];
   let out = text.replace(PLACEHOLDER_RE, (m) => {
     tokens.push({ kind: "ph", original: m });
-    return `<x-ph i="${tokens.length - 1}"></x-ph>`;
+    return `<${TAG.ph} i="${tokens.length - 1}"></${TAG.ph}>`;
   });
-  out = out.replace(MARKER_RE, (_m, slash, n) => `<${slash}x-c${n}>`);
+  out = out.replace(MARKER_RE, (_m, slash, n) => `<${slash}${TAG.marker}${n}>`);
   const terms = [...new Set(protectedTerms.filter(Boolean))].sort(
     (a, b) => b.length - a.length
   );
   for (const term of terms) {
     out = out.replace(termRegExp(term), () => {
       tokens.push({ kind: "pt", original: term });
-      return `<x-pt i="${tokens.length - 1}"></x-pt>`;
+      return `<${TAG.pt} i="${tokens.length - 1}"></${TAG.pt}>`;
     });
   }
   return { text: out, tokens };
@@ -216,11 +224,12 @@ function restore(translated, tokens, sourceEnglish) {
   // back. Decode the basic entities only when the source had none of them, so
   // a source that legitimately contains `&amp;` is left alone.
   if (!ENTITY_RE.test(sourceEnglish)) {
-    out = out.replace(ENTITY_RE, (_m, name) => ENTITIES[name]);
+    out = out.replace(ENTITY_RE, decodeEntity);
   }
   ENTITY_RE.lastIndex = 0;
 
-  if (/\u0000|<\/?x-(?:ph|pt|c\d+)\b/.test(out)) {
+  // Also catches a token Rosetta returned without its x- prefix.
+  if (/\u0000|<\/?(?:x-)?(?:ph|pt|c\d+)\b/.test(out)) {
     return { ok: false, text: out, reason: "a protected token was altered or lost" };
   }
   const terms = tokens.filter((t) => t.kind === "pt").map((t) => t.original);

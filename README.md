@@ -213,8 +213,9 @@ How it keeps translations stable:
   artifact instead of being uploaded; use it for the first run on each
   environment and diff the artifact against the live files. Make sure that
   first run includes a few new strings with `&`, `<`, quotes and a `{{x}}`
-  placeholder, so the gateway's handling of them is seen before anything is
-  published.
+  placeholder, and one that starts with a placeholder or marker (such as
+  `{{count}} items`), so the gateway's handling of them is seen before anything
+  is published.
 - **What counts as translated.** Any string value already on the CDN is
   reused, including one identical to the English. That is deliberate (product
   names such as "Wallet API" are kept in English on purpose), but it also means
