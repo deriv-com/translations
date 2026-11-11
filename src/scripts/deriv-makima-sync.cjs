@@ -8,7 +8,7 @@
  */
 if (require.main === module) {
   console.error(
-    "✗ deriv-makima-sync is retired: Makima is sunset on 18 Nov 2026. Use deriv-rosetta-sync with ROSETTA_API_TOKEN and ROSETTA_API_BASE (https://translation-api.deriv.ai). See the README section 'Moving from the Makima action'."
+    "✗ deriv-makima-sync is retired: Makima is sunset on 18 Nov 2026. Use deriv-rosetta-sync with ROSETTA_API_TOKEN and ROSETTA_API_BASE. See the README section 'Moving from the Makima action'."
   );
   process.exit(1);
 }

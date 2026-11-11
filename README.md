@@ -187,7 +187,7 @@ jobs:
 ## Syncing translations with Rosetta
 
 Crowdin is being decommissioned in favour of the internal Rosetta translation
-API (`rosetta.deriv.ai`), which replaced the Makima gateway.
+API, which replaced the Makima gateway.
 `extract_and_sync_translations_rosetta` is a drop-in sibling of the
 Crowdin action: it runs the same extractor and uploads the same
 `translations/<locale>.json` files to the same R2 folder, so the runtime needs
@@ -255,10 +255,11 @@ The action takes the following inputs:
   Chinese also accepts the runtime's `zh_cn` / `zh_tw` (the `ZH_CN` / `ZH_TW` language
   codes), and the file keeps that name.
 - `ROSETTA_API_TOKEN`: Bearer token for Rosetta (a secret). Create it at
-  [rosetta.deriv.ai](https://rosetta.deriv.ai) under *Tokens* with your team's
-  LiteLLM key; it is shown only once.
-- `ROSETTA_API_BASE`: base URL of the Rosetta API, `https://translation-api.deriv.ai`.
+  the Rosetta web app (ask the Rosetta team for access); it is shown only once.
+- `ROSETTA_API_BASE`: base URL of the Rosetta API: its https host only, from the Rosetta team.
   Required, with no default, so a consumer always names the host it sends the token to.
+- `ROSETTA_CF_ACCESS_CLIENT_ID`, `ROSETTA_CF_ACCESS_CLIENT_SECRET`: optional Cloudflare
+  Access service token for CI runners; see "Runner network".
 - `CDN_BASE_URL`: where the current catalogues are served (default `https://translations.deriv.com`).
 - `PROTECTED_TERMS_FILE`: optional path to a JSON array of strings that must never be translated.
 - `FALLBACK_ENVIRONMENT`: optional `staging` or `production`, another environment whose catalogue is consulted before Rosetta. Must differ from `ENVIRONMENT`.
@@ -282,12 +283,18 @@ and the sync that runs with `ROSETTA_API_TOKEN`, not only the action's steps.
 
 ### Runner network
 
-The Rosetta API only admits allow-listed networks. GitHub-hosted runners such
-as `ubuntu-latest` are not on that list, so their requests get Cloudflare's
-"Sorry, you have been blocked" page, and the sync fails with
-`Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID …)`. Run the sync
-job on a runner group whose network the Rosetta team has allow-listed, and send
-them the Ray ID from the error if a run is blocked.
+The Rosetta API may require a Cloudflare Access **service token** from CI
+runners. If the Rosetta team issues one for GitHub Actions, pass it as:
+
+- `ROSETTA_CF_ACCESS_CLIENT_ID`: the token's Client ID (store it as a secret).
+- `ROSETTA_CF_ACCESS_CLIENT_SECRET`: the token's Client Secret (a secret).
+
+Set both or neither; they are sent as the `CF-Access-Client-Id` and
+`CF-Access-Client-Secret` headers on every Rosetta request, and never logged.
+Without them, a blocked run fails with
+`Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID …)` or
+`… redirected to Cloudflare Access login`. If a run with the token is still
+blocked, share the Ray ID from the error with the Rosetta team privately.
 
 ### Moving from the Makima action
 
@@ -295,10 +302,10 @@ Before this rename the action was `extract_and_sync_translations_makima`, with
 the `MAKIMA_API_KEY` and `MAKIMA_API_BASE` inputs and the `deriv-makima-sync`
 bin. Makima is sunset on 18 Nov 2026. To move, change the `uses:` path to
 `extract_and_sync_translations_rosetta`, pinned to a release that contains that
-folder, pass `ROSETTA_API_TOKEN` (create it at rosetta.deriv.ai) and
-`ROSETTA_API_BASE` (`https://translation-api.deriv.ai`, the host only), and run
+folder, pass `ROSETTA_API_TOKEN` and `ROSETTA_API_BASE` (the Rosetta API host
+only; both from the Rosetta team), and run
 a dry run first. The settings are checked before anything is installed: the
-base must be an https host with no path, and the Makima gateway is refused.
+base must be an https host with no path.
 Until Makima is switched off on 18 Nov 2026, the old path still works: it runs
 the v1.6.1 action and warns. The first release after the sunset is planned to
 turn it into a step that only fails with a pointer here. The `deriv-makima-sync`
@@ -339,6 +346,8 @@ jobs:
           TARGET_LOCALES: es,fr,pt
           ROSETTA_API_TOKEN: ${{ secrets.ROSETTA_API_TOKEN }}
           ROSETTA_API_BASE: ${{ vars.ROSETTA_API_BASE }}
+          ROSETTA_CF_ACCESS_CLIENT_ID: ${{ secrets.ROSETTA_CF_ACCESS_CLIENT_ID }}
+          ROSETTA_CF_ACCESS_CLIENT_SECRET: ${{ secrets.ROSETTA_CF_ACCESS_CLIENT_SECRET }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -349,7 +358,7 @@ The same bin can be run locally for a dry run after `npx deriv-extract-translati
 
 ```bash
 PROJECT_NAME=my-project ENVIRONMENT=staging TARGET_LOCALES=es,fr,pt \
-ROSETTA_API_BASE=https://translation-api.deriv.ai ROSETTA_API_TOKEN=… DRY_RUN=true npx deriv-rosetta-sync
+ROSETTA_API_BASE=https://<rosetta-api-host> ROSETTA_API_TOKEN=… DRY_RUN=true npx deriv-rosetta-sync
 ```
 
 ## Contributing

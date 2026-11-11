@@ -34,11 +34,14 @@
  * Environment (the composite action maps its inputs onto these):
  *   PROJECT_NAME, ENVIRONMENT (staging|production), TARGET_LOCALES (e.g.
  *   "es,fr,pt"), ROSETTA_API_TOKEN, ROSETTA_API_BASE, CDN_BASE_URL, DRY_RUN,
+ *   ROSETTA_CF_ACCESS_CLIENT_ID and ROSETTA_CF_ACCESS_CLIENT_SECRET (optional,
+ *   both or neither: a Cloudflare Access service token for the Rosetta API),
  *   PROTECTED_TERMS_FILE (optional JSON array of strings), FALLBACK_ENVIRONMENT,
  *   FALLBACK_MODE, OVERRIDES_FILE (all optional), TRANSLATIONS_DIR
  *   (default ./translations), REFERENCE (default "<project>/<env>/<GITHUB_SHA>").
  *
- * The API key is read from the environment and never written to any log.
+ * The API key and the service token are read from the environment and never
+ * written to any log.
  *
  * Exit code: non-zero only for hard failures (bad configuration, auth, the job
  * failing outright, a timeout). A `partial` job writes the locales that
@@ -490,29 +493,77 @@ async function readJson(res) {
 
 const headerOf = (res, name) => (res && res.headers && typeof res.headers.get === "function" ? res.headers.get(name) : null);
 
+/** A redirect's Location as a URL, resolved against the request URL; null if it can't be parsed. */
+function parseLocation(location, requestUrl) {
+  try {
+    return new URL(location, requestUrl || undefined);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a redirect target is Cloudflare Access login: judged by host and path only, never the query. */
+const isAccessLogin = (url) => Boolean(url) && (/(^|\.)cloudflareaccess\.com$/i.test(url.hostname) || url.pathname.startsWith("/cdn-cgi/access/"));
+
 /**
  * The error for an unexpected response. Cloudflare in front of the API answers
- * a request from a network that is not on its allow-list with a 403 HTML block
- * page; report that in one line, with the Ray ID, instead of dumping the page
- * into the log. Any other response (an outage page, a wrong host) keeps its
- * status, with the Ray ID when there is one, and a non-JSON body is cut short.
+ * a blocked request with a 403 HTML page, and Cloudflare Access with a
+ * redirect to its login page; report either in one line, with the Ray ID,
+ * instead of dumping the page into the log. Any other response (an outage
+ * page, a wrong host) keeps its status, with the Ray ID when there is one,
+ * and a non-JSON body is cut short.
  */
-async function httpFailure(res, what) {
+async function httpFailure(res, what, { tokenSent = false, requestUrl } = {}) {
   const text = await res.text().catch(() => "");
   const html = /text\/html/i.test(headerOf(res, "content-type") || "");
   const rayHeader = headerOf(res, "cf-ray");
   const rayId = rayHeader ? rayHeader.split("-")[0] : (text.match(/Ray ID:?\s*(?:<[^>]*>\s*)*([0-9a-f]{16})/i) || [])[1];
-  if (res.status === 403 && html && (rayHeader || /cloudflare/i.test(text))) {
+  const location = headerOf(res, "location") || "";
+  const target = location ? parseLocation(location, requestUrl) : null;
+  const redirect = res.status >= 300 && res.status < 400;
+  if (redirect && isAccessLogin(target)) {
     return new Error(
-      `${what} was blocked by Cloudflare (HTTP 403${rayId ? `, Ray ID ${rayId}` : ""}): this runner's network is not on the Rosetta allow-list. Run the sync on an allow-listed runner (see the README).`
+      tokenSent
+        ? `${what} was redirected to Cloudflare Access login (HTTP ${res.status}): the service token was not accepted. Check or rotate ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET (see the README).`
+        : `${what} was redirected to Cloudflare Access login (HTTP ${res.status}): set ROSETTA_CF_ACCESS_CLIENT_ID and ROSETTA_CF_ACCESS_CLIENT_SECRET to a valid service token (see the README).`
     );
+  }
+  if (res.status === 403 && html && (rayHeader || /cloudflare/i.test(text))) {
+    const ray = rayId ? `, Ray ID ${rayId}` : "";
+    return new Error(
+      tokenSent
+        ? `${what} was blocked by Cloudflare (HTTP 403${ray}) although a service token was sent: the token may be wrong, or another Cloudflare rule blocked the request. Share the Ray ID with the Rosetta team (see the README).`
+        : `${what} was blocked by Cloudflare (HTTP 403${ray}): if the API requires a Cloudflare Access service token, set ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET; otherwise share the Ray ID with the Rosetta team (see the README).`
+    );
+  }
+  if (redirect) {
+    // Rosetta requests do not follow redirects (see rosettaInit); say where it pointed,
+    // origin and path only (a query string may carry tokens).
+    const where = !location ? "no Location" : target ? `${target.origin}${target.pathname}` : "an unparseable Location";
+    return new Error(`${what} was redirected (HTTP ${res.status}) to ${where}; Rosetta requests do not follow redirects, so check ROSETTA_API_BASE.`);
   }
   const body = parseBody(text);
   if (typeof body.raw === "string" && body.raw.length > 300) body.raw = `${body.raw.slice(0, 300)}…`;
   return new Error(`${what} failed with HTTP ${res.status}${rayId ? ` (Ray ID ${rayId})` : ""}: ${JSON.stringify(body)}`);
 }
 
-async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5 }) {
+/** Whether extraHeaders carries a Cloudflare Access service token, whatever the header-name casing. */
+const hasServiceToken = (extraHeaders) => Object.keys(extraHeaders || {}).some((name) => /^cf-access-client-/i.test(name));
+
+/**
+ * Headers for every Rosetta request. `extraHeaders` carries the optional
+ * Cloudflare Access service token. Redirects are not followed: Cloudflare
+ * Access answers an unauthenticated request with a redirect to its login page,
+ * which must surface as an error, not as an HTML page with status 200.
+ */
+const rosettaInit = (apiKey, extraHeaders, init = {}) => ({
+  ...init,
+  redirect: "manual",
+  headers: { ...(extraHeaders || {}), ...(init.headers || {}), Authorization: `Bearer ${apiKey}` },
+});
+
+async function submitJob({ fetchImpl, base, apiKey, extraHeaders, body, sleep, maxAttempts = 5 }) {
+  const url = `${base}/v1/translate`;
   let attempt = 0;
   for (;;) {
     // A 5xx after the gateway actually accepted the job would create a
@@ -521,12 +572,12 @@ async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5
     const res = await fetchWithRetry({
       fetchImpl,
       sleep,
-      url: `${base}/v1/translate`,
-      init: {
+      url,
+      init: rosettaInit(apiKey, extraHeaders, {
         method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-      },
+      }),
     });
     if (res.status === 202 || res.status === 200) {
       const json = await readJson(res);
@@ -538,11 +589,12 @@ async function submitJob({ fetchImpl, base, apiKey, body, sleep, maxAttempts = 5
       attempt += 1;
       continue;
     }
-    throw await httpFailure(res, "Rosetta submit");
+    throw await httpFailure(res, "Rosetta submit", { tokenSent: hasServiceToken(extraHeaders), requestUrl: url });
   }
 }
 
-async function pollJob({ fetchImpl, base, apiKey, jobId, sleep, maxWaitMs = 30 * 60 * 1000, now = Date.now }) {
+async function pollJob({ fetchImpl, base, apiKey, extraHeaders, jobId, sleep, maxWaitMs = 30 * 60 * 1000, now = Date.now }) {
+  const url = `${base}/v1/translate/${encodeURIComponent(jobId)}`;
   const deadline = now() + maxWaitMs;
   let attempt = 0;
   let transient = 0;
@@ -551,8 +603,8 @@ async function pollJob({ fetchImpl, base, apiKey, jobId, sleep, maxWaitMs = 30 *
     const res = await fetchWithRetry({
       fetchImpl,
       sleep,
-      url: `${base}/v1/translate/${encodeURIComponent(jobId)}`,
-      init: { headers: { Authorization: `Bearer ${apiKey}` } },
+      url,
+      init: rosettaInit(apiKey, extraHeaders),
     });
     if (res.status === 429 || res.status >= 500) {
       if (transient >= 8) throw new Error(`Rosetta poll for ${jobId} kept failing with HTTP ${res.status}`);
@@ -561,7 +613,7 @@ async function pollJob({ fetchImpl, base, apiKey, jobId, sleep, maxWaitMs = 30 *
       continue;
     }
     if (res.status !== 200) {
-      throw await httpFailure(res, `Rosetta poll for ${jobId}`);
+      throw await httpFailure(res, `Rosetta poll for ${jobId}`, { tokenSent: hasServiceToken(extraHeaders), requestUrl: url });
     }
     const body = await readJson(res);
     if (body.status === "completed" || body.status === "partial") return body;
@@ -583,7 +635,7 @@ async function pollJob({ fetchImpl, base, apiKey, jobId, sleep, maxWaitMs = 30 *
  * failed in chunk 2 keeps chunk 1's translations; only chunk 2's keys are
  * retried on the next run. `status` is `partial` if anything failed.
  */
-async function translateContent({ content, targetNames, reference, fetchImpl, base, apiKey, sleep, log = () => {} }) {
+async function translateContent({ content, targetNames, reference, fetchImpl, base, apiKey, extraHeaders = {}, sleep, log = () => {} }) {
   const results = {};
   const errors = {};
   const failedKeys = {};
@@ -602,6 +654,7 @@ async function translateContent({ content, targetNames, reference, fetchImpl, ba
       fetchImpl,
       base,
       apiKey,
+      extraHeaders,
       sleep,
       body: {
         reference: chunkRef,
@@ -611,7 +664,7 @@ async function translateContent({ content, targetNames, reference, fetchImpl, ba
       },
     });
     log(`Submitted job ${jobId} (${chunkKeys.length} strings, ref ${chunkRef})`);
-    const body = await pollJob({ fetchImpl, base, apiKey, jobId, sleep });
+    const body = await pollJob({ fetchImpl, base, apiKey, extraHeaders, jobId, sleep });
     const returned = body.results || {};
     for (const language of targetNames) {
       const value = returned[language];
@@ -720,16 +773,10 @@ function appendOutput(file, lines) {
 
 const isSet = (value) => value !== undefined && value !== null && String(value).trim() !== "";
 
-/** Hosts of the sunset Makima gateway; a Rosetta token must never be sent there. */
-const MAKIMA_HOSTS = ["pedro-api-dev.deriv.ai"];
-
-const BASE_EXAMPLE = "https://translation-api.deriv.ai";
-
 /**
  * Parse ROSETTA_API_BASE into the origin requests are sent to. The token goes
  * to this host, so it must be https, carry no path, query or fragment (the
- * client adds `/v1/translate` itself), and not be the sunset Makima gateway.
- * Errors never echo the value: a token wired into this input by mistake must
+ * client adds `/v1/translate` itself). Errors never echo the value: a token wired into this input by mistake must
  * not reach the log.
  */
 function parseBase(raw) {
@@ -737,20 +784,44 @@ function parseBase(raw) {
   try {
     url = new URL(String(raw).trim());
   } catch {
-    throw new Error(`ROSETTA_API_BASE must be an https URL such as ${BASE_EXAMPLE}`);
+    throw new Error("ROSETTA_API_BASE must be an https URL: the Rosetta API host");
   }
   if (url.protocol !== "https:") {
-    throw new Error(`ROSETTA_API_BASE must be an https URL such as ${BASE_EXAMPLE}`);
-  }
-  // A trailing dot names the same host ("example.com." is "example.com").
-  const host = url.hostname.replace(/\.$/, "").toLowerCase();
-  if (MAKIMA_HOSTS.includes(host) || /\/makima\b/i.test(url.pathname)) {
-    throw new Error(`ROSETTA_API_BASE points at the sunset Makima gateway; set it to the Rosetta host, ${BASE_EXAMPLE}`);
+    throw new Error("ROSETTA_API_BASE must be an https URL: the Rosetta API host");
   }
   if (!/^\/*$/.test(url.pathname) || url.search || url.hash || url.username || url.password) {
-    throw new Error(`ROSETTA_API_BASE must be the host only, such as ${BASE_EXAMPLE}, with no path (the sync adds /v1/translate), query or credentials`);
+    throw new Error("ROSETTA_API_BASE must be the Rosetta API host only, with no path (the sync adds /v1/translate), query or credentials");
   }
   return url.origin;
+}
+
+/**
+ * A credential that is sent as a header value, trimmed. A value with a space or
+ * a control character inside fails here, naming the setting but never the
+ * value: fetch would reject the header with an error that quotes it, and the
+ * retry loop would then log that error.
+ */
+function headerSecret(env, name) {
+  const value = String(env[name] ?? "").trim();
+  if (/[^\x21-\x7e]/.test(value)) {
+    throw new Error(`${name} contains a space, a line break or another character a header cannot carry; set it again without them`);
+  }
+  return value;
+}
+
+/**
+ * The optional Cloudflare Access service token in front of the Rosetta API,
+ * as the two headers Cloudflare Access reads. Both settings or neither: one
+ * without the other is a configuration mistake, not a partial token.
+ */
+function readServiceToken(env) {
+  const id = headerSecret(env, "ROSETTA_CF_ACCESS_CLIENT_ID");
+  const secret = headerSecret(env, "ROSETTA_CF_ACCESS_CLIENT_SECRET");
+  if (!id && !secret) return {};
+  if (!id || !secret) {
+    throw new Error("ROSETTA_CF_ACCESS_CLIENT_ID and ROSETTA_CF_ACCESS_CLIENT_SECRET must be set together (a Cloudflare Access service token)");
+  }
+  return { "CF-Access-Client-Id": id, "CF-Access-Client-Secret": secret };
 }
 
 function readEnv(env) {
@@ -760,8 +831,9 @@ function readEnv(env) {
     if (!isSet(env[name])) throw new Error(`${name} is required`);
   }
   // Trimmed: a secret pasted with a trailing newline is not a valid header value.
-  const token = String(env.ROSETTA_API_TOKEN).trim();
+  const token = headerSecret(env, "ROSETTA_API_TOKEN");
   const base = parseBase(env.ROSETTA_API_BASE);
+  const extraHeaders = readServiceToken(env);
   const environments = ["staging", "production"];
   const environment = String(env.ENVIRONMENT).trim();
   if (!environments.includes(environment)) {
@@ -795,6 +867,7 @@ function readEnv(env) {
     locales,
     languageNames,
     apiKey: token,
+    extraHeaders,
     base,
     cdnBase: env.CDN_BASE_URL || "https://translations.deriv.com",
     dryRun: /^(1|true|yes)$/i.test(String(env.DRY_RUN || "")),
@@ -876,7 +949,7 @@ async function main(env = process.env, io = {}) {
   let rosettaErrors = {};
   let failedKeys = {};
   if (union.size > 0) {
-    const out = await translateContent({ content, targetNames, reference: cfg.reference, fetchImpl, base: cfg.base, apiKey: cfg.apiKey, sleep, log });
+    const out = await translateContent({ content, targetNames, reference: cfg.reference, fetchImpl, base: cfg.base, apiKey: cfg.apiKey, extraHeaders: cfg.extraHeaders, sleep, log });
     status = out.status;
     results = out.results;
     rosettaErrors = out.errors;
@@ -980,6 +1053,10 @@ module.exports = {
   countTerms,
   buildSummary,
   readEnv,
+  // Exported so callers that load this file directly (deriv-api-templates)
+  // validate the base URL and the service token with these rules, not a copy.
+  parseBase,
+  readServiceToken,
   main,
   testSupport,
 };

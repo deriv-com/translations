@@ -61,13 +61,17 @@ interface SyncModule {
     fetchImpl: FetchLike;
     base: string;
     apiKey: string;
+    extraHeaders?: Record<string, string>;
     sleep: (ms: number) => Promise<void>;
   }): Promise<{ status: string; results: Record<string, Record<string, string>>; errors: Record<string, string>; failedKeys: Record<string, Set<string>> }>;
+  parseBase(raw: string): string;
+  readServiceToken(env: Env): Record<string, string>;
   readEnv(env: Env): {
     locales: string[];
     dryRun: boolean;
     languageNames: Map<string, string>;
     apiKey: string;
+    extraHeaders: Record<string, string>;
     base: string;
     reference: string;
     fallbackEnvironment: string | null;
@@ -474,15 +478,77 @@ describe("submit → poll", () => {
   it("reports a Cloudflare block in one line with the Ray ID, not the HTML page", async () => {
     const page = "<!DOCTYPE html><title>Attention Required! | Cloudflare</title><p>Sorry, you have been blocked</p>" + "x".repeat(5000);
     const blocked: FetchLike = async () =>
-      new Response(page, { status: 403, headers: { "Content-Type": "text/html; charset=UTF-8", "cf-ray": "a57c3a92cf2c14cc-FRA" } });
+      new Response(page, { status: 403, headers: { "Content-Type": "text/html; charset=UTF-8", "cf-ray": "0f0f0f0f0f0f0f0f-FRA" } });
     const run = sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl: blocked, base: "https://rosetta.test", apiKey: "s", sleep: noSleep });
     const error = await run.then(() => null, (e: Error) => e);
     expect(error?.message).toBe(
-      "Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID a57c3a92cf2c14cc): this runner's network is not on the Rosetta allow-list. Run the sync on an allow-listed runner (see the README)."
+      "Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID 0f0f0f0f0f0f0f0f): if the API requires a Cloudflare Access service token, set ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET; otherwise share the Ray ID with the Rosetta team (see the README)."
     );
   });
 
-  it("does not blame the allow-list for an outage page, a wrong host, or a response without headers", async () => {
+  it("sends the Cloudflare Access service token on submit and poll, and never follows a redirect", async () => {
+    const seen: { url: string; headers: Record<string, string>; redirect?: string }[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      seen.push({ url, headers: { ...(init?.headers as Record<string, string>) }, redirect: init?.redirect });
+      if (init?.method === "POST") return jsonResponse(202, { job_id: "job-cf", status: "queued" });
+      return jsonResponse(200, { status: "completed", results: { Spanish: { k: "x-es" } }, errors: null });
+    };
+    const extraHeaders = { "CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "shh" };
+    await sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", extraHeaders, sleep: noSleep });
+    expect(seen).toHaveLength(2);
+    for (const call of seen) {
+      expect(call.headers).toMatchObject({ ...extraHeaders, Authorization: "Bearer s" });
+      expect(call.redirect).toBe("manual");
+    }
+  });
+
+  it("works without a service token, as before", async () => {
+    const seen: Record<string, string>[] = [];
+    const fetchImpl: FetchLike = async (_url, init) => {
+      seen.push({ ...(init?.headers as Record<string, string>) });
+      if (init?.method === "POST") return jsonResponse(202, { job_id: "job-plain", status: "queued" });
+      return jsonResponse(200, { status: "completed", results: { Spanish: { k: "x-es" } }, errors: null });
+    };
+    await sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", sleep: noSleep });
+    for (const headers of seen) expect(Object.keys(headers).filter((h) => h.startsWith("CF-Access"))).toEqual([]);
+  });
+
+  it("tells a rejected service token apart from a missing one, and names any other redirect without its query", async () => {
+    const run = (fetchImpl: FetchLike, extraHeaders?: Record<string, string>) =>
+      sync
+        .translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", extraHeaders, sleep: noSleep })
+        .then(() => null, (e: Error) => e);
+    const token = { "CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "shh" };
+    const redirectTo = (location: string, status = 302): FetchLike => async () => new Response(null, { status, headers: { Location: location } });
+    // Same-host, relative and team-domain Access login redirects all count.
+    for (const location of ["https://rosetta.test/cdn-cgi/access/login?redirect_url=%2Fv1", "/cdn-cgi/access/login", "https://example.cloudflareaccess.com/cdn-cgi/access/login/rosetta.test?kid=abc"]) {
+      expect((await run(redirectTo(location)))?.message).toBe(
+        "Rosetta submit was redirected to Cloudflare Access login (HTTP 302): set ROSETTA_CF_ACCESS_CLIENT_ID and ROSETTA_CF_ACCESS_CLIENT_SECRET to a valid service token (see the README)."
+      );
+      expect((await run(redirectTo(location), token))?.message).toMatch(/redirected to Cloudflare Access login \(HTTP 302\): the service token was not accepted/);
+    }
+    // Header-name casing does not matter for telling a rejected token from a missing one.
+    const lower = { "cf-access-client-id": "id.access", "cf-access-client-secret": "shh" };
+    expect((await run(redirectTo("/cdn-cgi/access/login"), lower))?.message).toMatch(/the service token was not accepted/);
+    // Only the redirect's host and path decide: Access named in a query string is an ordinary redirect.
+    expect((await run(redirectTo("https://new.rosetta.test/v1/translate?next=https://x.cloudflareaccess.com/login", 307)))?.message).toBe(
+      "Rosetta submit was redirected (HTTP 307) to https://new.rosetta.test/v1/translate; Rosetta requests do not follow redirects, so check ROSETTA_API_BASE."
+    );
+    // A relative Location is resolved against the request URL.
+    expect((await run(redirectTo("/v2/translate", 308)))?.message).toBe(
+      "Rosetta submit was redirected (HTTP 308) to https://rosetta.test/v2/translate; Rosetta requests do not follow redirects, so check ROSETTA_API_BASE."
+    );
+    const blocked: FetchLike = async () =>
+      new Response("<html>Sorry, you have been blocked</html>", { status: 403, headers: { "Content-Type": "text/html", "cf-ray": "abcdef0123456789-FRA" } });
+    expect((await run(blocked, token))?.message).toMatch(/blocked by Cloudflare \(HTTP 403, Ray ID abcdef0123456789\) although a service token was sent: the token may be wrong, or another Cloudflare rule blocked the request/);
+    const moved: FetchLike = async () => new Response(null, { status: 308, headers: { Location: "https://new.rosetta.test/v1/translate?sig=secret-sig" } });
+    const error = await run(moved);
+    expect(error?.message).toBe(
+      "Rosetta submit was redirected (HTTP 308) to https://new.rosetta.test/v1/translate; Rosetta requests do not follow redirects, so check ROSETTA_API_BASE."
+    );
+  });
+
+  it("does not blame Cloudflare Access or the service token for an outage page, a wrong host, or a response without headers", async () => {
     const run = (fetchImpl: FetchLike) =>
       sync
         .translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", sleep: noSleep })
@@ -490,7 +556,7 @@ describe("submit → poll", () => {
     const page = "<!DOCTYPE html><title>rosetta.test | 522: Connection timed out</title>" + "z".repeat(5000);
     const outage = await run(async () => new Response(page, { status: 522, headers: { "Content-Type": "text/html", "cf-ray": "8f00aa11bb22cc33-FRA" } }));
     expect(outage?.message).toMatch(/^Rosetta submit failed with HTTP 522 \(Ray ID 8f00aa11bb22cc33\): \{"raw":"<!DOCTYPE html>.*…"\}$/);
-    expect(outage?.message).not.toMatch(/allow-list/);
+    expect(outage?.message).not.toMatch(/service token|Cloudflare Access/);
     const wrongHost = await run(async () => new Response("<html>Not found</html>", { status: 404, headers: { "Content-Type": "text/html", "cf-ray": "1234567890abcdef-AMS" } }));
     expect(wrongHost?.message).toMatch(/failed with HTTP 404 \(Ray ID 1234567890abcdef\)/);
     const bare = await run(async () => ({ status: 400, text: async () => "bad request" }) as unknown as Response);
@@ -562,17 +628,59 @@ describe("configuration and summary", () => {
       expect((error as Error).message).toMatch(message);
       expect((error as Error).message).not.toContain(base.trim());
     };
-    bad("https://pedro-api-dev.deriv.ai", /points at the sunset Makima gateway/);
-    bad("https://PEDRO-API-DEV.deriv.ai./", /points at the sunset Makima gateway/); // trailing dot, any case
-    bad("https://gw.test/api/makima", /points at the sunset Makima gateway/);
-    bad("http://rosetta.test", /must be an https URL/);
-    bad("rosetta.test:443", /must be an https URL/); // parses with protocol "rosetta.test:"
-    bad("sk-not-a-url-token", /must be an https URL/);
-    bad("https://rosetta.test/v1", /must be the host only/);
-    bad("https://rosetta.test/?x=1", /must be the host only/);
-    bad("https://user:pw@rosetta.test", /must be the host only/);
+    bad("https://gw.test/api/makima", /must be the Rosetta API host only/);
+    bad("http://rosetta.test", /must be an https URL: the Rosetta API host/);
+    bad("rosetta.test:443", /must be an https URL: the Rosetta API host/); // parses with protocol "rosetta.test:"
+    bad("sk-not-a-url-token", /must be an https URL: the Rosetta API host/);
+    bad("https://rosetta.test/v1", /must be the Rosetta API host only/);
+    bad("https://rosetta.test/?x=1", /must be the Rosetta API host only/);
+    bad("https://user:pw@rosetta.test", /must be the Rosetta API host only/);
     // The origin is used, so trailing slashes never double up in the request URL.
     expect(sync.readEnv({ ...baseEnv, ROSETTA_API_BASE: " https://rosetta.test// " }).base).toBe("https://rosetta.test");
+  });
+
+  it("reads the optional Cloudflare Access service token, both settings or neither, trimmed, and never echoed", () => {
+    expect(sync.readEnv(baseEnv).extraHeaders).toEqual({});
+    expect(sync.readEnv({ ...baseEnv, ROSETTA_CF_ACCESS_CLIENT_ID: "", ROSETTA_CF_ACCESS_CLIENT_SECRET: "" }).extraHeaders).toEqual({});
+    expect(sync.readEnv({ ...baseEnv, ROSETTA_CF_ACCESS_CLIENT_ID: " id.access\n", ROSETTA_CF_ACCESS_CLIENT_SECRET: " shh\n" }).extraHeaders).toEqual({
+      "CF-Access-Client-Id": "id.access",
+      "CF-Access-Client-Secret": "shh",
+    });
+    for (const half of [{ ROSETTA_CF_ACCESS_CLIENT_ID: "id-only-value" }, { ROSETTA_CF_ACCESS_CLIENT_SECRET: "secret-only-value" }]) {
+      let error: unknown;
+      try {
+        sync.readEnv({ ...baseEnv, ...half });
+      } catch (e) {
+        error = e;
+      }
+      expect((error as Error).message).toMatch(/must be set together/);
+      expect((error as Error).message).not.toMatch(/only-value/);
+    }
+  });
+
+  it("exports parseBase and readServiceToken for callers that load the script directly", () => {
+    expect(sync.parseBase(" https://rosetta.test// ")).toBe("https://rosetta.test");
+    expect(() => sync.parseBase("http://rosetta.test")).toThrow(/must be an https URL: the Rosetta API host/);
+    expect(sync.readServiceToken({ ROSETTA_CF_ACCESS_CLIENT_ID: "id", ROSETTA_CF_ACCESS_CLIENT_SECRET: "sec" })).toEqual({ "CF-Access-Client-Id": "id", "CF-Access-Client-Secret": "sec" });
+    expect(sync.readServiceToken({})).toEqual({});
+  });
+
+  it("rejects a credential with a space or control character inside, without echoing it", () => {
+    const cases: Env[] = [
+      { ROSETTA_API_TOKEN: "tok\nleaked-api-part" },
+      { ROSETTA_CF_ACCESS_CLIENT_ID: "id.access", ROSETTA_CF_ACCESS_CLIENT_SECRET: "sec\u0000leaked-cf-part" },
+      { ROSETTA_CF_ACCESS_CLIENT_ID: "id with leaked-id-part", ROSETTA_CF_ACCESS_CLIENT_SECRET: "shh" },
+    ];
+    for (const overrides of cases) {
+      let error: unknown;
+      try {
+        sync.readEnv({ ...baseEnv, ...overrides });
+      } catch (e) {
+        error = e;
+      }
+      expect((error as Error).message).toMatch(/contains a space, a line break or another character/);
+      expect((error as Error).message).not.toMatch(/leaked/);
+    }
   });
 
   it("resolves each locale code to its language name once, and rejects an unknown code before anything runs", () => {
@@ -702,6 +810,28 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
     expect(readText(join(dir, "output.txt"))).toBe("status=completed\nkept_back=0\ntranslated=3\nfrom_fallback=0\noverridden=0\n");
     expect(readText(join(dir, "summary.md"))).toContain("| es | 1 | 2 | 1 | 0 |");
     expect(logs.join("\n")).not.toContain("secret");
+  });
+
+  it("sends the service token from the environment on every Rosetta request, and not to the CDN", async () => {
+    const { env } = setup({ a: "Alpha" });
+    env.ROSETTA_CF_ACCESS_CLIENT_ID = "id.access";
+    env.ROSETTA_CF_ACCESS_CLIENT_SECRET = "cf-secret-value";
+    const logs: string[] = [];
+    const sent: { url: string; headers: Record<string, string> }[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      sent.push({ url, headers: { ...((init?.headers as Record<string, string>) || {}) } });
+      if (url.startsWith("https://cdn.test/")) return new Response("", { status: 404 });
+      if (init?.method === "POST") return jsonResponse(202, { job_id: "job-12", status: "queued" });
+      return jsonResponse(200, { status: "completed", results: { Spanish: { a: "Alfa" }, French: { a: "Alpha-fr" } }, errors: null });
+    };
+    await sync.main(env, { fetch: fetchImpl, sleep: noSleep, log: (m) => logs.push(m) });
+    const rosetta = sent.filter((c) => c.url.startsWith("https://rosetta.test/"));
+    expect(rosetta).toHaveLength(2);
+    for (const call of rosetta) expect(call.headers["CF-Access-Client-Secret"]).toBe("cf-secret-value");
+    const cdn = sent.filter((c) => c.url.startsWith("https://cdn.test/"));
+    expect(cdn.length).toBeGreaterThan(0);
+    for (const call of cdn) expect(call.headers["CF-Access-Client-Secret"]).toBeUndefined();
+    expect(logs.join("\n")).not.toContain("cf-secret-value");
   });
 
   it("submits to /v1/translate and polls /v1/translate/{job_id} on the configured base", async () => {

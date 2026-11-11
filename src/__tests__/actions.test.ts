@@ -83,8 +83,9 @@ describe("the Rosetta action", () => {
 
   it("passes the Rosetta inputs to the sync, and no Makima ones", () => {
     const steps = stepsOf("extract_and_sync_translations_rosetta");
-    for (const name of ["ROSETTA_API_TOKEN", "ROSETTA_API_BASE"]) {
-      expect(steps).toContain(`${name}: \${{ inputs.${name} }}`);
+    for (const name of ["ROSETTA_API_TOKEN", "ROSETTA_API_BASE", "ROSETTA_CF_ACCESS_CLIENT_ID", "ROSETTA_CF_ACCESS_CLIENT_SECRET"]) {
+      // Both the settings check and the sync step need every setting.
+      expect(steps.split(`${name}: \${{ inputs.${name} }}`).length - 1).toBe(2);
     }
     expect(steps).not.toMatch(/MAKIMA/);
   });
