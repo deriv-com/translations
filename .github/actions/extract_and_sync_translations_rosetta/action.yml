@@ -15,7 +15,7 @@ inputs:
     description: "Comma-separated locale codes to translate into, e.g. es,fr,pt"
     required: true
   ROSETTA_API_TOKEN:
-    description: "Bearer token for the Rosetta translation API, issued by the Rosetta team (secret)"
+    description: "Bearer token for the Rosetta translation API, created in the Rosetta web app (ask the Rosetta team for access) (secret)"
     required: true
   ROSETTA_API_BASE:
     description: "Base URL of the Rosetta API: its https host only, from the Rosetta team (no default, so a consumer always names the host it sends the token to)"
