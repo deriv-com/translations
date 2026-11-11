@@ -493,31 +493,35 @@ async function readJson(res) {
 
 const headerOf = (res, name) => (res && res.headers && typeof res.headers.get === "function" ? res.headers.get(name) : null);
 
-/**
- * The error for an unexpected response. Cloudflare in front of the API answers
- * a request from a network that is not on its allow-list with a 403 HTML block
- * page; report that in one line, with the Ray ID, instead of dumping the page
- * into the log. Any other response (an outage page, a wrong host) keeps its
- * status, with the Ray ID when there is one, and a non-JSON body is cut short.
- */
-/** Where a redirect points, without its query string (which may carry tokens). */
-function redirectTarget(location) {
+/** A redirect's Location as a URL, resolved against the request URL; null if it can't be parsed. */
+function parseLocation(location, requestUrl) {
   try {
-    const url = new URL(location);
-    return `${url.origin}${url.pathname}`;
+    return new URL(location, requestUrl || undefined);
   } catch {
-    return "an unparseable Location";
+    return null;
   }
 }
 
-async function httpFailure(res, what, { tokenSent = false } = {}) {
+/** Whether a redirect target is Cloudflare Access login: judged by host and path only, never the query. */
+const isAccessLogin = (url) => Boolean(url) && (/(^|\.)cloudflareaccess\.com$/i.test(url.hostname) || url.pathname.startsWith("/cdn-cgi/access/"));
+
+/**
+ * The error for an unexpected response. Cloudflare in front of the API answers
+ * a blocked request with a 403 HTML page, and Cloudflare Access with a
+ * redirect to its login page; report either in one line, with the Ray ID,
+ * instead of dumping the page into the log. Any other response (an outage
+ * page, a wrong host) keeps its status, with the Ray ID when there is one,
+ * and a non-JSON body is cut short.
+ */
+async function httpFailure(res, what, { tokenSent = false, requestUrl } = {}) {
   const text = await res.text().catch(() => "");
   const html = /text\/html/i.test(headerOf(res, "content-type") || "");
   const rayHeader = headerOf(res, "cf-ray");
   const rayId = rayHeader ? rayHeader.split("-")[0] : (text.match(/Ray ID:?\s*(?:<[^>]*>\s*)*([0-9a-f]{16})/i) || [])[1];
   const location = headerOf(res, "location") || "";
+  const target = location ? parseLocation(location, requestUrl) : null;
   const redirect = res.status >= 300 && res.status < 400;
-  if (redirect && /cloudflareaccess\.com|\/cdn-cgi\/access\//i.test(location)) {
+  if (redirect && isAccessLogin(target)) {
     return new Error(
       tokenSent
         ? `${what} was redirected to Cloudflare Access login (HTTP ${res.status}): the service token was not accepted. Check or rotate ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET (see the README).`
@@ -528,18 +532,23 @@ async function httpFailure(res, what, { tokenSent = false } = {}) {
     const ray = rayId ? `, Ray ID ${rayId}` : "";
     return new Error(
       tokenSent
-        ? `${what} was blocked by Cloudflare (HTTP 403${ray}) although a service token was sent: check or rotate ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET, and send the Ray ID to the Rosetta team (see the README).`
-        : `${what} was blocked by Cloudflare (HTTP 403${ray}): this runner is not allowed through. Send a Cloudflare Access service token (ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET) or run on an allow-listed runner (see the README).`
+        ? `${what} was blocked by Cloudflare (HTTP 403${ray}) although a service token was sent: the token may be wrong, or another Cloudflare rule blocked the request. Share the Ray ID with the Rosetta team (see the README).`
+        : `${what} was blocked by Cloudflare (HTTP 403${ray}): send a Cloudflare Access service token (ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET; see the README).`
     );
   }
   if (redirect) {
-    // Rosetta requests do not follow redirects (see rosettaInit); say where it pointed.
-    return new Error(`${what} was redirected (HTTP ${res.status}) to ${location ? redirectTarget(location) : "no Location"}; Rosetta requests do not follow redirects, so check ROSETTA_API_BASE.`);
+    // Rosetta requests do not follow redirects (see rosettaInit); say where it pointed,
+    // origin and path only (a query string may carry tokens).
+    const where = !location ? "no Location" : target ? `${target.origin}${target.pathname}` : "an unparseable Location";
+    return new Error(`${what} was redirected (HTTP ${res.status}) to ${where}; Rosetta requests do not follow redirects, so check ROSETTA_API_BASE.`);
   }
   const body = parseBody(text);
   if (typeof body.raw === "string" && body.raw.length > 300) body.raw = `${body.raw.slice(0, 300)}…`;
   return new Error(`${what} failed with HTTP ${res.status}${rayId ? ` (Ray ID ${rayId})` : ""}: ${JSON.stringify(body)}`);
 }
+
+/** Whether extraHeaders carries a Cloudflare Access service token, whatever the header-name casing. */
+const hasServiceToken = (extraHeaders) => Object.keys(extraHeaders || {}).some((name) => /^cf-access-client-/i.test(name));
 
 /**
  * Headers for every Rosetta request. `extraHeaders` carries the optional
@@ -547,8 +556,6 @@ async function httpFailure(res, what, { tokenSent = false } = {}) {
  * Access answers an unauthenticated request with a redirect to its login page,
  * which must surface as an error, not as an HTML page with status 200.
  */
-const hasServiceToken = (extraHeaders) => Boolean(extraHeaders && extraHeaders["CF-Access-Client-Id"]);
-
 const rosettaInit = (apiKey, extraHeaders, init = {}) => ({
   ...init,
   redirect: "manual",
@@ -581,7 +588,7 @@ async function submitJob({ fetchImpl, base, apiKey, extraHeaders, body, sleep, m
       attempt += 1;
       continue;
     }
-    throw await httpFailure(res, "Rosetta submit", { tokenSent: hasServiceToken(extraHeaders) });
+    throw await httpFailure(res, "Rosetta submit", { tokenSent: hasServiceToken(extraHeaders), requestUrl: `${base}/v1/translate` });
   }
 }
 
@@ -604,7 +611,7 @@ async function pollJob({ fetchImpl, base, apiKey, extraHeaders, jobId, sleep, ma
       continue;
     }
     if (res.status !== 200) {
-      throw await httpFailure(res, `Rosetta poll for ${jobId}`, { tokenSent: hasServiceToken(extraHeaders) });
+      throw await httpFailure(res, `Rosetta poll for ${jobId}`, { tokenSent: hasServiceToken(extraHeaders), requestUrl: `${base}/v1/translate/${encodeURIComponent(jobId)}` });
     }
     const body = await readJson(res);
     if (body.status === "completed" || body.status === "partial") return body;

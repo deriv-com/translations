@@ -482,7 +482,7 @@ describe("submit → poll", () => {
     const run = sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl: blocked, base: "https://rosetta.test", apiKey: "s", sleep: noSleep });
     const error = await run.then(() => null, (e: Error) => e);
     expect(error?.message).toBe(
-      "Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID 0f0f0f0f0f0f0f0f): this runner is not allowed through. Send a Cloudflare Access service token (ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET) or run on an allow-listed runner (see the README)."
+      "Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID 0f0f0f0f0f0f0f0f): send a Cloudflare Access service token (ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET; see the README)."
     );
   });
 
@@ -519,27 +519,32 @@ describe("submit → poll", () => {
         .translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", extraHeaders, sleep: noSleep })
         .then(() => null, (e: Error) => e);
     const token = { "CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "shh" };
-    const accessLogin: FetchLike = async () => new Response(null, { status: 302, headers: { Location: "https://rosetta.test/cdn-cgi/access/login?redirect_url=%2Fv1" } });
-    expect((await run(accessLogin))?.message).toMatch(/redirected to Cloudflare Access login \(HTTP 302\): set ROSETTA_CF_ACCESS_CLIENT_ID/);
-    expect((await run(accessLogin, token))?.message).toMatch(/redirected to Cloudflare Access login \(HTTP 302\): the service token was not accepted/);
+    const redirectTo = (location: string, status = 302): FetchLike => async () => new Response(null, { status, headers: { Location: location } });
+    // Same-host, relative and team-domain Access login redirects all count.
+    for (const location of ["https://rosetta.test/cdn-cgi/access/login?redirect_url=%2Fv1", "/cdn-cgi/access/login", "https://example.cloudflareaccess.com/cdn-cgi/access/login/rosetta.test?kid=abc"]) {
+      expect((await run(redirectTo(location)))?.message).toBe(
+        "Rosetta submit was redirected to Cloudflare Access login (HTTP 302): set ROSETTA_CF_ACCESS_CLIENT_ID and ROSETTA_CF_ACCESS_CLIENT_SECRET to a valid service token (see the README)."
+      );
+      expect((await run(redirectTo(location), token))?.message).toMatch(/redirected to Cloudflare Access login \(HTTP 302\): the service token was not accepted/);
+    }
+    // Header-name casing does not matter for telling a rejected token from a missing one.
+    const lower = { "cf-access-client-id": "id.access", "cf-access-client-secret": "shh" };
+    expect((await run(redirectTo("/cdn-cgi/access/login"), lower))?.message).toMatch(/the service token was not accepted/);
+    // Only the redirect's host and path decide: Access named in a query string is an ordinary redirect.
+    expect((await run(redirectTo("https://new.rosetta.test/v1/translate?next=https://x.cloudflareaccess.com/login", 307)))?.message).toBe(
+      "Rosetta submit was redirected (HTTP 307) to https://new.rosetta.test/v1/translate; Rosetta requests do not follow redirects, so check ROSETTA_API_BASE."
+    );
+    // A relative Location is resolved against the request URL.
+    expect((await run(redirectTo("/v2/translate", 308)))?.message).toBe(
+      "Rosetta submit was redirected (HTTP 308) to https://rosetta.test/v2/translate; Rosetta requests do not follow redirects, so check ROSETTA_API_BASE."
+    );
     const blocked: FetchLike = async () =>
       new Response("<html>Sorry, you have been blocked</html>", { status: 403, headers: { "Content-Type": "text/html", "cf-ray": "abcdef0123456789-FRA" } });
-    expect((await run(blocked, token))?.message).toMatch(/blocked by Cloudflare \(HTTP 403, Ray ID abcdef0123456789\) although a service token was sent/);
+    expect((await run(blocked, token))?.message).toMatch(/blocked by Cloudflare \(HTTP 403, Ray ID abcdef0123456789\) although a service token was sent: the token may be wrong, or another Cloudflare rule blocked the request/);
     const moved: FetchLike = async () => new Response(null, { status: 308, headers: { Location: "https://new.rosetta.test/v1/translate?sig=secret-sig" } });
     const error = await run(moved);
     expect(error?.message).toBe(
       "Rosetta submit was redirected (HTTP 308) to https://new.rosetta.test/v1/translate; Rosetta requests do not follow redirects, so check ROSETTA_API_BASE."
-    );
-  });
-
-  it("reports a redirect to Cloudflare Access login in one line, pointing at the service token", async () => {
-    const fetchImpl: FetchLike = async () =>
-      new Response(null, { status: 302, headers: { Location: "https://example.cloudflareaccess.com/cdn-cgi/access/login/rosetta.test?kid=abc" } });
-    const error = await sync
-      .translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", sleep: noSleep })
-      .then(() => null, (e: Error) => e);
-    expect(error?.message).toBe(
-      "Rosetta submit was redirected to Cloudflare Access login (HTTP 302): set ROSETTA_CF_ACCESS_CLIENT_ID and ROSETTA_CF_ACCESS_CLIENT_SECRET to a valid service token (see the README)."
     );
   });
 
