@@ -533,7 +533,7 @@ async function httpFailure(res, what, { tokenSent = false, requestUrl } = {}) {
     return new Error(
       tokenSent
         ? `${what} was blocked by Cloudflare (HTTP 403${ray}) although a service token was sent: the token may be wrong, or another Cloudflare rule blocked the request. Share the Ray ID with the Rosetta team (see the README).`
-        : `${what} was blocked by Cloudflare (HTTP 403${ray}): send a Cloudflare Access service token (ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET; see the README).`
+        : `${what} was blocked by Cloudflare (HTTP 403${ray}): if the API requires a Cloudflare Access service token, set ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET; otherwise share the Ray ID with the Rosetta team (see the README).`
     );
   }
   if (redirect) {
@@ -563,6 +563,7 @@ const rosettaInit = (apiKey, extraHeaders, init = {}) => ({
 });
 
 async function submitJob({ fetchImpl, base, apiKey, extraHeaders, body, sleep, maxAttempts = 5 }) {
+  const url = `${base}/v1/translate`;
   let attempt = 0;
   for (;;) {
     // A 5xx after the gateway actually accepted the job would create a
@@ -571,7 +572,7 @@ async function submitJob({ fetchImpl, base, apiKey, extraHeaders, body, sleep, m
     const res = await fetchWithRetry({
       fetchImpl,
       sleep,
-      url: `${base}/v1/translate`,
+      url,
       init: rosettaInit(apiKey, extraHeaders, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -588,11 +589,12 @@ async function submitJob({ fetchImpl, base, apiKey, extraHeaders, body, sleep, m
       attempt += 1;
       continue;
     }
-    throw await httpFailure(res, "Rosetta submit", { tokenSent: hasServiceToken(extraHeaders), requestUrl: `${base}/v1/translate` });
+    throw await httpFailure(res, "Rosetta submit", { tokenSent: hasServiceToken(extraHeaders), requestUrl: url });
   }
 }
 
 async function pollJob({ fetchImpl, base, apiKey, extraHeaders, jobId, sleep, maxWaitMs = 30 * 60 * 1000, now = Date.now }) {
+  const url = `${base}/v1/translate/${encodeURIComponent(jobId)}`;
   const deadline = now() + maxWaitMs;
   let attempt = 0;
   let transient = 0;
@@ -601,7 +603,7 @@ async function pollJob({ fetchImpl, base, apiKey, extraHeaders, jobId, sleep, ma
     const res = await fetchWithRetry({
       fetchImpl,
       sleep,
-      url: `${base}/v1/translate/${encodeURIComponent(jobId)}`,
+      url,
       init: rosettaInit(apiKey, extraHeaders),
     });
     if (res.status === 429 || res.status >= 500) {
@@ -611,7 +613,7 @@ async function pollJob({ fetchImpl, base, apiKey, extraHeaders, jobId, sleep, ma
       continue;
     }
     if (res.status !== 200) {
-      throw await httpFailure(res, `Rosetta poll for ${jobId}`, { tokenSent: hasServiceToken(extraHeaders), requestUrl: `${base}/v1/translate/${encodeURIComponent(jobId)}` });
+      throw await httpFailure(res, `Rosetta poll for ${jobId}`, { tokenSent: hasServiceToken(extraHeaders), requestUrl: url });
     }
     const body = await readJson(res);
     if (body.status === "completed" || body.status === "partial") return body;

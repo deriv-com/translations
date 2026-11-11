@@ -482,7 +482,7 @@ describe("submit → poll", () => {
     const run = sync.translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl: blocked, base: "https://rosetta.test", apiKey: "s", sleep: noSleep });
     const error = await run.then(() => null, (e: Error) => e);
     expect(error?.message).toBe(
-      "Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID 0f0f0f0f0f0f0f0f): send a Cloudflare Access service token (ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET; see the README)."
+      "Rosetta submit was blocked by Cloudflare (HTTP 403, Ray ID 0f0f0f0f0f0f0f0f): if the API requires a Cloudflare Access service token, set ROSETTA_CF_ACCESS_CLIENT_ID / _SECRET; otherwise share the Ray ID with the Rosetta team (see the README)."
     );
   });
 
@@ -548,7 +548,7 @@ describe("submit → poll", () => {
     );
   });
 
-  it("does not blame the allow-list for an outage page, a wrong host, or a response without headers", async () => {
+  it("does not blame Cloudflare Access or the service token for an outage page, a wrong host, or a response without headers", async () => {
     const run = (fetchImpl: FetchLike) =>
       sync
         .translateContent({ content: { k: "x" }, targetNames: ["Spanish"], reference: "r", fetchImpl, base: "https://rosetta.test", apiKey: "s", sleep: noSleep })
@@ -556,7 +556,7 @@ describe("submit → poll", () => {
     const page = "<!DOCTYPE html><title>rosetta.test | 522: Connection timed out</title>" + "z".repeat(5000);
     const outage = await run(async () => new Response(page, { status: 522, headers: { "Content-Type": "text/html", "cf-ray": "8f00aa11bb22cc33-FRA" } }));
     expect(outage?.message).toMatch(/^Rosetta submit failed with HTTP 522 \(Ray ID 8f00aa11bb22cc33\): \{"raw":"<!DOCTYPE html>.*…"\}$/);
-    expect(outage?.message).not.toMatch(/allow-list/);
+    expect(outage?.message).not.toMatch(/service token|Cloudflare Access/);
     const wrongHost = await run(async () => new Response("<html>Not found</html>", { status: 404, headers: { "Content-Type": "text/html", "cf-ray": "1234567890abcdef-AMS" } }));
     expect(wrongHost?.message).toMatch(/failed with HTTP 404 \(Ray ID 1234567890abcdef\)/);
     const bare = await run(async () => ({ status: 400, text: async () => "bad request" }) as unknown as Response);
