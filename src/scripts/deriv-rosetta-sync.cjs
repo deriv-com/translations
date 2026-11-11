@@ -127,12 +127,46 @@ function localeFileName(code) {
 // because the same regex builds the signature the token check compares.
 const PLACEHOLDER_RE = /\{\{-?\s*[^{}]+?\s*\}\}|\$t\([^()]*\)/g;
 const MARKER_RE = /<(\/?)(\d+)>/g;
-const ENTITY_RE = /&(amp|lt|gt|quot|#39|apos);/g;
-const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", apos: "'" };
+// Any HTML entity: named, decimal or hex (`&#x…;` or `&#X…;`).
+const ENTITY_RE = /&([A-Za-z][A-Za-z0-9]*|#\d+|#[xX][0-9a-fA-F]+);/g;
+// Named entities restore() decodes: the basic ones plus the typographic ones an
+// HTML serialiser commonly emits. Any other name is left, and held back.
+const ENTITIES = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0",
+  lsquo: "\u2018", rsquo: "\u2019", ldquo: "\u201c", rdquo: "\u201d",
+  laquo: "\u00ab", raquo: "\u00bb", hellip: "\u2026", ndash: "\u2013", mdash: "\u2014",
+};
+/**
+ * Decode one entity matched by ENTITY_RE. A name not in ENTITIES, and a numeric
+ * entity for a surrogate, a control character (other than tab, LF and CR) or an
+ * out-of-range code point, is returned as is, so the leftover check fails it.
+ */
+function decodeEntity(match, name) {
+  // Own properties only: `&constructor;` must not reach Object.prototype.
+  if (name[0] !== "#") return Object.hasOwn(ENTITIES, name) ? ENTITIES[name] : match;
+  const code = name[1].toLowerCase() === "x" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+  const control = (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || (code >= 0x7f && code <= 0x9f);
+  const surrogate = code >= 0xd800 && code <= 0xdfff;
+  return code > 0 && code <= 0x10ffff && !control && !surrogate ? String.fromCodePoint(code) : match;
+}
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+// Protection tags are custom elements (a hyphen in the name): see protect().
+// restore()'s regexes are built from the same table, so a rename stays in one place.
+const TAG = { ph: "x-ph", pt: "x-pt", marker: "x-c" };
+const KIND_BY_TAG = { [TAG.ph]: "ph", [TAG.pt]: "pt" };
+const TOKEN_TAG_RE = new RegExp(
+  `<(${escapeRegExp(TAG.ph)}|${escapeRegExp(TAG.pt)})\\s+i="(\\d+)"\\s*(?:\\/>|>\\s*<\\/\\1\\s*>)`,
+  "g"
+);
+const MARKER_TAG_RE = new RegExp(`<(\\/?)${escapeRegExp(TAG.marker)}(\\d+)>`, "g");
+// A token that survived restore, in its tag form or without its prefix.
+const LEFTOVER_TOKEN_RE = new RegExp(
+  `\\u0000|<\\/?(?:${escapeRegExp(TAG.ph)}|${escapeRegExp(TAG.pt)}|${escapeRegExp(TAG.marker)}\\d+|ph|pt|c\\d+)\\b`
+);
 
 /** Whole-term match: not glued to a letter or digit on either side. */
 function termRegExp(term) {
@@ -159,25 +193,29 @@ function countTerms(text, terms) {
 
 /**
  * Replace everything Rosetta must not translate with HTML tokens it preserves:
- *   `{{name}}`      → `<ph i="N"></ph>`   (an element with no visible text)
- *   `<0>…</0>`      → `<c0>…</c0>`        (valid tag names; the inner text is still translated)
- *   protected term  → `<pt i="N"></pt>`   (brand names; the term is kept in `tokens`)
+ *   `{{name}}`      → `<x-ph i="N"></x-ph>`  (an element with no visible text)
+ *   `<0>…</0>`      → `<x-c0>…</x-c0>`       (the inner text is still translated)
+ *   protected term  → `<x-pt i="N"></x-pt>`  (brand names; the term is kept in `tokens`)
+ * The names are custom elements (they contain a hyphen) on purpose: Rosetta
+ * treats a string that starts with any other non-HTML tag as XML and rejects it
+ * as malformed (HTTP 422) unless it is a whole XML document, so a string that
+ * began with a marker, a placeholder or a protected term would fail the batch.
  * Returns the protected text and the token table needed to restore it.
  */
 function protect(text, protectedTerms = []) {
   const tokens = [];
   let out = text.replace(PLACEHOLDER_RE, (m) => {
     tokens.push({ kind: "ph", original: m });
-    return `<ph i="${tokens.length - 1}"></ph>`;
+    return `<${TAG.ph} i="${tokens.length - 1}"></${TAG.ph}>`;
   });
-  out = out.replace(MARKER_RE, (_m, slash, n) => `<${slash}c${n}>`);
+  out = out.replace(MARKER_RE, (_m, slash, n) => `<${slash}${TAG.marker}${n}>`);
   const terms = [...new Set(protectedTerms.filter(Boolean))].sort(
     (a, b) => b.length - a.length
   );
   for (const term of terms) {
     out = out.replace(termRegExp(term), () => {
       tokens.push({ kind: "pt", original: term });
-      return `<pt i="${tokens.length - 1}"></pt>`;
+      return `<${TAG.pt} i="${tokens.length - 1}"></${TAG.pt}>`;
     });
   }
   return { text: out, tokens };
@@ -201,23 +239,31 @@ function signature(text) {
  */
 function restore(translated, tokens, sourceEnglish) {
   let out = String(translated);
-  // Rosetta may serialise an empty element as <ph i="1"></ph>, <ph i="1"/> or
-  // <ph i="1" /> and may put whitespace inside; accept all of them.
-  out = out.replace(/<(ph|pt)\s+i="(\d+)"\s*(?:\/>|>\s*<\/\1\s*>)/g, (_m, kind, i) => {
+  // Rosetta may serialise an empty element as <x-ph i="1"></x-ph>, <x-ph i="1"/>
+  // or <x-ph i="1" /> and may put whitespace inside; accept all of them.
+  out = out.replace(TOKEN_TAG_RE, (_m, tag, i) => {
+    const kind = KIND_BY_TAG[tag];
     const token = tokens[Number(i)];
     return token && token.kind === kind ? token.original : `\u0000${kind}${i}\u0000`;
   });
-  out = out.replace(/<(\/?)c(\d+)>/g, "<$1$2>");
-  // An HTML-aware translator may escape `&`, `<`, `>` and quotes on the way
-  // back. Decode the basic entities only when the source had none of them, so
-  // a source that legitimately contains `&amp;` is left alone.
-  if (!ENTITY_RE.test(sourceEnglish)) {
-    out = out.replace(ENTITY_RE, (_m, name) => ENTITIES[name]);
-  }
-  ENTITY_RE.lastIndex = 0;
+  out = out.replace(MARKER_TAG_RE, "<$1$2>");
+  // An HTML-aware translator may escape `&`, `<`, `>`, quotes and non-breaking
+  // spaces, or emit numeric entities, on the way back. Decode those, except an
+  // entity the source itself contains, which is kept as written: a source
+  // with `&amp;` keeps its `&amp;`, while a `&amp;` the translator added to a
+  // source with only `&nbsp;` is still decoded.
+  const sourceEntities = new Set(String(sourceEnglish).match(ENTITY_RE) || []);
+  out = out.replace(ENTITY_RE, (m, name) => (sourceEntities.has(m) ? m : decodeEntity(m, name)));
 
-  if (/\u0000|<\/?(?:ph|pt|c\d+)\b/.test(out)) {
+  // Also catches a token Rosetta returned without its x- prefix.
+  if (LEFTOVER_TOKEN_RE.test(out)) {
     return { ok: false, text: out, reason: "a protected token was altered or lost" };
+  }
+  // Any other entity the source did not have (`&euro;`, a surrogate) would be
+  // published literally, so the string is held back instead.
+  const leftover = (out.match(ENTITY_RE) || []).find((e) => !sourceEntities.has(e));
+  if (leftover) {
+    return { ok: false, text: out, reason: `an HTML entity was left in the translation (${leftover})` };
   }
   const terms = tokens.filter((t) => t.kind === "pt").map((t) => t.original);
   const check = checkTranslation(out, sourceEnglish, terms);
@@ -1003,7 +1049,7 @@ async function main(env = process.env, io = {}) {
   if (cfg.summaryFile) fs.appendFileSync(cfg.summaryFile, `${summary}\n`);
   // Surface problems as workflow annotations, not only in the summary table.
   if (status === "partial") log(`::warning::Rosetta returned a partial result for ${cfg.project}/${cfg.environment}: ${Object.keys(rosettaErrors).join(", ")} — see the job summary`);
-  if (keptBackTotal > 0) log(`::warning::${keptBackTotal} string(s) were kept out of the ${cfg.project}/${cfg.environment} catalogues because a placeholder, marker or protected term did not survive translation — see the job summary`);
+  if (keptBackTotal > 0) log(`::warning::${keptBackTotal} string(s) were kept out of the ${cfg.project}/${cfg.environment} catalogues because a placeholder, marker or protected term did not survive translation, or an HTML entity was left in it — see the job summary`);
   if (overrides && overrides.stale.length) log(`::warning::${overrides.stale.length} override(s) in ${cfg.overridesFile} name English text that is no longer extracted — see the job summary`);
   appendOutput(cfg.outputFile, [
     `status=${status}`,

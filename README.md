@@ -203,7 +203,8 @@ How it keeps translations stable:
 - **Protected tokens.** `{{placeholders}}`, `<0>…</0>` component markers and any
   terms listed in `PROTECTED_TERMS_FILE` (brand and product names) are swapped
   for HTML tokens Rosetta preserves, restored afterwards, and verified to appear
-  exactly once. A string that fails the check is left out of the file — the
+  exactly once. A string that fails the check, or whose translation still holds
+  an HTML entity the source did not have, is left out of the file — the
   runtime falls back to English for it and the next run retries it — and is
   listed in the job summary.
 - **Partial results.** If Rosetta fails a language, the locales that succeeded
@@ -213,8 +214,9 @@ How it keeps translations stable:
   artifact instead of being uploaded; use it for the first run on each
   environment and diff the artifact against the live files. Make sure that
   first run includes a few new strings with `&`, `<`, quotes and a `{{x}}`
-  placeholder, so the gateway's handling of them is seen before anything is
-  published.
+  placeholder, and one that starts with a placeholder or marker (such as
+  `{{count}} items`), so the gateway's handling of them is seen before anything
+  is published.
 - **What counts as translated.** Any string value already on the CDN is
   reused, including one identical to the English. That is deliberate (product
   names such as "Wallet API" are kept in English on purpose), but it also means
@@ -270,7 +272,7 @@ The action takes the following inputs:
 It exposes four outputs: `status` (`noop` when the catalogues are unchanged,
 `completed` when new translations, the fallback, overrides or pruning changed
 them, or `partial`), `kept_back` (the number of strings left out by the token
-check), `from_fallback` (values taken from `FALLBACK_ENVIRONMENT`) and
+check or for a leftover HTML entity), `from_fallback` (values taken from `FALLBACK_ENVIRONMENT`) and
 `overridden` (values `OVERRIDES_FILE` changed or added; an override already
 published counts as reused).
 

@@ -69,7 +69,7 @@ outputs:
     description: "noop (the catalogues are unchanged), completed (new translations, or values changed by the fallback, overrides or pruning), or partial (a language failed; its file was left as the CDN had it)"
     value: ${{ steps.sync.outputs.status }}
   kept_back:
-    description: "Number of strings left out because a placeholder, marker or protected term did not survive translation"
+    description: "Number of strings left out because a placeholder, marker or protected term did not survive translation, or an HTML entity was left in it"
     value: ${{ steps.sync.outputs.kept_back }}
   from_fallback:
     description: "Number of values taken from FALLBACK_ENVIRONMENT's catalogue (0 when it is not set)"

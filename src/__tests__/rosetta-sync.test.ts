@@ -155,8 +155,8 @@ describe("token protection", () => {
     expect(text).not.toContain("{{");
     expect(text).not.toContain("<0>");
     expect(text).not.toContain("Deriv MCP");
-    expect(text).toContain('<ph i="0"></ph>');
-    expect(text).toContain("<c0>");
+    expect(text).toContain('<x-ph i="0"></x-ph>');
+    expect(text).toContain("<x-c0>");
     expect(tokens.map((t) => t.original)).toEqual(["{{name}}", "{{count}}", "Deriv MCP"]);
 
     const translated = text.replace("Build your", "Construye tu").replace("app with", "app con").replace("steps.", "pasos.");
@@ -168,7 +168,7 @@ describe("token protection", () => {
   it("protects every i18next interpolation shape, not only {{name}}", () => {
     const source = "{{count, number}} items, {{- raw}} and $t(common.ok)";
     const { text, tokens } = sync.protect(source);
-    expect(text).toBe('<ph i="0"></ph> items, <ph i="1"></ph> and <ph i="2"></ph>');
+    expect(text).toBe('<x-ph i="0"></x-ph> items, <x-ph i="1"></x-ph> and <x-ph i="2"></x-ph>');
     expect(tokens.map((t) => t.original)).toEqual(["{{count, number}}", "{{- raw}}", "$t(common.ok)"]);
     expect(sync.restore(text.replace("items", "elementos"), tokens, source)).toMatchObject({ ok: true, text: "{{count, number}} elementos, {{- raw}} and $t(common.ok)" });
   });
@@ -176,28 +176,65 @@ describe("token protection", () => {
   it("accepts the self-closing and spaced forms Rosetta may emit", () => {
     const source = "Hello {{name}}";
     const { tokens } = sync.protect(source);
-    expect(sync.restore('Hola <ph i="0"/>', tokens, source).ok).toBe(true);
-    expect(sync.restore('Hola <ph i="0" />', tokens, source).ok).toBe(true);
-    expect(sync.restore('Hola <ph i="0"> </ph>', tokens, source).ok).toBe(true);
+    expect(sync.restore('Hola <x-ph i="0"/>', tokens, source).ok).toBe(true);
+    expect(sync.restore('Hola <x-ph i="0" />', tokens, source).ok).toBe(true);
+    expect(sync.restore('Hola <x-ph i="0"> </x-ph>', tokens, source).ok).toBe(true);
   });
 
-  it("decodes HTML entities the translator added, but only when the source had none", () => {
+  it("decodes entities the translator added, keeping any the source has", () => {
     expect(sync.restore("Pares &amp; opciones &lt;rápido&gt;", [], "Pairs & options <fast>")).toMatchObject({ ok: true, text: "Pares & opciones <rápido>" });
+    expect(sync.restore("Les éléments ne sont pas prêts&nbsp;: c&#x27;est &#8216;ok&#8217;", [], "Items aren't ready: it's 'ok'")).toMatchObject({ ok: true, text: "Les éléments ne sont pas prêts\u00a0: c'est \u2018ok\u2019" });
+    // An entity the source has is kept; one the translator added is still decoded.
+    expect(sync.restore("Frais&nbsp;: bas &amp; rapide", [], "Fees:&nbsp;low & fast")).toMatchObject({ ok: true, text: "Frais&nbsp;: bas & rapide" });
     // A source that already carries an entity is left exactly as returned.
     expect(sync.restore("Tom &amp; Jerry", [], "Tom &amp; Jerry")).toMatchObject({ ok: true, text: "Tom &amp; Jerry" });
+    // Uppercase hex and the common typographic names are decoded too.
+    expect(sync.restore("&laquo;&nbsp;Portefeuille&nbsp;&raquo; c&rsquo;est prêt&hellip; c&#X27;est", [], "Wallet: it's ready... it's")).toMatchObject({ ok: true, text: "\u00ab\u00a0Portefeuille\u00a0\u00bb c\u2019est prêt\u2026 c'est" });
+  });
+
+  it.each([
+    ["an unsupported named entity", "10&euro; seulement", "Only 10 euros", "&euro;"],
+    ["an entity named like an Object property", "Ouvrir &constructor; le menu", "Open the menu", "&constructor;"],
+    ["a lone surrogate", "Hola &#xD83D;", "Hello", "&#xD83D;"],
+    ["a control character", "Hola&#1;", "Hello", "&#1;"],
+  ])("holds back a translation with %s the source did not have", (_label, translated, source, entity) => {
+    expect(sync.restore(translated, [], source)).toMatchObject({ ok: false, reason: `an HTML entity was left in the translation (${entity})` });
   });
 
   it("fails closed when a token is lost, duplicated or translated", () => {
     const source = "Copy {{value}} to <0>clipboard</0> with Claude Code";
     const { text, tokens } = sync.protect(source, ["Claude Code"]);
-    expect(sync.restore(text.replace('<ph i="0"></ph>', ""), tokens, source)).toMatchObject({ ok: false, reason: /placeholders/ });
-    expect(sync.restore(text.replace("</c0>", ""), tokens, source)).toMatchObject({ ok: false, reason: /markers|token/ });
-    expect(sync.restore(text.replace('<pt i="1"></pt>', "Código Claude"), tokens, source)).toMatchObject({ ok: false, reason: /protected term/ });
+    expect(sync.restore(text.replace('<x-ph i="0"></x-ph>', ""), tokens, source)).toMatchObject({ ok: false, reason: /placeholders/ });
+    expect(sync.restore(text.replace("</x-c0>", ""), tokens, source)).toMatchObject({ ok: false, reason: /markers|token/ });
+    expect(sync.restore(text.replace('<x-pt i="1"></x-pt>', "Código Claude"), tokens, source)).toMatchObject({ ok: false, reason: /protected term/ });
+  });
+
+  it.each([
+    ["a marker", "<0>symbol</0> is renamed to <1>underlying_symbol</1>.", []],
+    ["a placeholder", "{{count}} items selected", []],
+    ["a protected term", "Deriv MCP connects your assistant", ["Deriv MCP"]],
+  ])("starts the protected text with a custom element when the source starts with %s", (_label, source, terms) => {
+    // Rosetta rejects a string that starts with a non-HTML tag without a hyphen
+    // as malformed XML (HTTP 422), which fails the whole batch. Custom elements
+    // (a hyphen in the name) are treated as HTML, so the string goes through.
+    const { text, tokens } = sync.protect(source, terms);
+    const firstTag = /^<([A-Za-z_][\w.:-]*)/.exec(text);
+    expect(firstTag?.[1]).toContain("-");
+    expect(sync.restore(text, tokens, source)).toMatchObject({ ok: true, text: source });
+  });
+
+  it.each([
+    ["a placeholder", "Open {{name}}", [], 'Abrir <ph i="0"></ph>'],
+    ["a protected term", "Open Deriv MCP", ["Deriv MCP"], 'Abrir <pt i="0"></pt>'],
+    ["a marker", "Open <0>docs</0>", [], "Abrir <c0>docs</c0>"],
+  ])("fails closed on %s left without its x- prefix", (_label, source, terms, translated) => {
+    const { tokens } = sync.protect(source, terms);
+    expect(sync.restore(translated, tokens, source)).toMatchObject({ ok: false, reason: /protected token/ });
   });
 
   it("does not protect a term inside a longer word", () => {
     const { text, tokens } = sync.protect("Bots and Bot", ["Bot"]);
-    expect(text).toBe('Bots and <pt i="0"></pt>');
+    expect(text).toBe('Bots and <x-pt i="0"></x-pt>');
     expect(tokens).toHaveLength(1);
   });
 
@@ -789,15 +826,15 @@ describe("main(): end to end against a temp directory and a mocked gateway", () 
         const body = JSON.parse(String(init.body)) as { content: Record<string, string>; target_languages: string[] };
         // The union of both locales' deltas, protected.
         expect(Object.keys(body.content).sort()).toEqual(["a", "b", "c"]);
-        expect(body.content.b).toBe('Open <ph i="0"></ph> in <pt i="1"></pt>');
+        expect(body.content.b).toBe('Open <x-ph i="0"></x-ph> in <x-pt i="1"></x-pt>');
         expect(body.target_languages).toEqual(["Spanish", "French"]);
         return jsonResponse(202, { job_id: "job-9", status: "queued" });
       }
       return jsonResponse(200, {
         status: "completed",
         results: {
-          Spanish: { a: "Alfa", b: 'Abrir <ph i="0"></ph> en <pt i="1"></pt>', c: "Gama" },
-          French: { a: "Alpha-fr", b: 'Ouvrir <ph i="0"/> dans <pt i="1"/>', c: "Gamma-fr" },
+          Spanish: { a: "Alfa", b: 'Abrir <x-ph i="0"></x-ph> en <x-pt i="1"></x-pt>', c: "Gama" },
+          French: { a: "Alpha-fr", b: 'Ouvrir <x-ph i="0"/> dans <x-pt i="1"/>', c: "Gamma-fr" },
         },
         errors: null,
       });
