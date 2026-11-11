@@ -15,11 +15,19 @@ inputs:
     description: "Comma-separated locale codes to translate into, e.g. es,fr,pt"
     required: true
   ROSETTA_API_TOKEN:
-    description: "Bearer token for the Rosetta translation API, created at rosetta.deriv.ai (secret)"
+    description: "Bearer token for the Rosetta translation API, issued by the Rosetta team (secret)"
     required: true
   ROSETTA_API_BASE:
-    description: "Base URL of the Rosetta API, e.g. https://translation-api.deriv.ai (no default, so a consumer always names the host it sends the token to)"
+    description: "Base URL of the Rosetta API: its https host only, from the Rosetta team (no default, so a consumer always names the host it sends the token to)"
     required: true
+  ROSETTA_CF_ACCESS_CLIENT_ID:
+    description: "Optional: Client ID of the Cloudflare Access service token in front of the Rosetta API (secret). Set together with ROSETTA_CF_ACCESS_CLIENT_SECRET"
+    required: false
+    default: ""
+  ROSETTA_CF_ACCESS_CLIENT_SECRET:
+    description: "Optional: Client Secret of the Cloudflare Access service token in front of the Rosetta API (secret). Set together with ROSETTA_CF_ACCESS_CLIENT_ID"
+    required: false
+    default: ""
   CDN_BASE_URL:
     description: "Where the current catalogues are served from; used as the translation memory"
     required: false
@@ -89,6 +97,8 @@ runs:
         TARGET_LOCALES: ${{ inputs.TARGET_LOCALES }}
         ROSETTA_API_TOKEN: ${{ inputs.ROSETTA_API_TOKEN }}
         ROSETTA_API_BASE: ${{ inputs.ROSETTA_API_BASE }}
+        ROSETTA_CF_ACCESS_CLIENT_ID: ${{ inputs.ROSETTA_CF_ACCESS_CLIENT_ID }}
+        ROSETTA_CF_ACCESS_CLIENT_SECRET: ${{ inputs.ROSETTA_CF_ACCESS_CLIENT_SECRET }}
         FALLBACK_ENVIRONMENT: ${{ inputs.FALLBACK_ENVIRONMENT }}
         FALLBACK_MODE: ${{ inputs.FALLBACK_MODE }}
       run: node "$GITHUB_ACTION_PATH/../../../src/scripts/deriv-rosetta-sync.cjs" --check-settings
@@ -116,6 +126,8 @@ runs:
         TARGET_LOCALES: ${{ inputs.TARGET_LOCALES }}
         ROSETTA_API_TOKEN: ${{ inputs.ROSETTA_API_TOKEN }}
         ROSETTA_API_BASE: ${{ inputs.ROSETTA_API_BASE }}
+        ROSETTA_CF_ACCESS_CLIENT_ID: ${{ inputs.ROSETTA_CF_ACCESS_CLIENT_ID }}
+        ROSETTA_CF_ACCESS_CLIENT_SECRET: ${{ inputs.ROSETTA_CF_ACCESS_CLIENT_SECRET }}
         CDN_BASE_URL: ${{ inputs.CDN_BASE_URL }}
         PROTECTED_TERMS_FILE: ${{ inputs.PROTECTED_TERMS_FILE }}
         FALLBACK_ENVIRONMENT: ${{ inputs.FALLBACK_ENVIRONMENT }}

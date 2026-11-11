@@ -79,7 +79,7 @@ runs:
   steps:
     - name: Warn that Makima is being switched off
       shell: bash
-      run: echo "::warning::extract_and_sync_translations_makima is deprecated and stops working when Makima is switched off on 18 Nov 2026. Move to deriv-com/translations/.github/actions/extract_and_sync_translations_rosetta with ROSETTA_API_TOKEN and ROSETTA_API_BASE (https://translation-api.deriv.ai). See the README section 'Moving from the Makima action'."
+      run: echo "::warning::extract_and_sync_translations_makima is deprecated and stops working when Makima is switched off on 18 Nov 2026. Move to deriv-com/translations/.github/actions/extract_and_sync_translations_rosetta with ROSETTA_API_TOKEN and ROSETTA_API_BASE. See the README section 'Moving from the Makima action'."
     - name: Run the v1.6.1 Makima action
       id: sync
       # The last release with the Makima client, pinned by commit.
