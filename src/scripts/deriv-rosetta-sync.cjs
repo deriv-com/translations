@@ -159,25 +159,29 @@ function countTerms(text, terms) {
 
 /**
  * Replace everything Rosetta must not translate with HTML tokens it preserves:
- *   `{{name}}`      → `<ph i="N"></ph>`   (an element with no visible text)
- *   `<0>…</0>`      → `<c0>…</c0>`        (valid tag names; the inner text is still translated)
- *   protected term  → `<pt i="N"></pt>`   (brand names; the term is kept in `tokens`)
+ *   `{{name}}`      → `<x-ph i="N"></x-ph>`  (an element with no visible text)
+ *   `<0>…</0>`      → `<x-c0>…</x-c0>`       (the inner text is still translated)
+ *   protected term  → `<x-pt i="N"></x-pt>`  (brand names; the term is kept in `tokens`)
+ * The names are custom elements (they contain a hyphen) on purpose: Rosetta
+ * treats a string that starts with any other non-HTML tag as XML and rejects it
+ * as malformed (HTTP 422) unless it is a whole XML document, so a string that
+ * began with a marker, a placeholder or a protected term would fail the batch.
  * Returns the protected text and the token table needed to restore it.
  */
 function protect(text, protectedTerms = []) {
   const tokens = [];
   let out = text.replace(PLACEHOLDER_RE, (m) => {
     tokens.push({ kind: "ph", original: m });
-    return `<ph i="${tokens.length - 1}"></ph>`;
+    return `<x-ph i="${tokens.length - 1}"></x-ph>`;
   });
-  out = out.replace(MARKER_RE, (_m, slash, n) => `<${slash}c${n}>`);
+  out = out.replace(MARKER_RE, (_m, slash, n) => `<${slash}x-c${n}>`);
   const terms = [...new Set(protectedTerms.filter(Boolean))].sort(
     (a, b) => b.length - a.length
   );
   for (const term of terms) {
     out = out.replace(termRegExp(term), () => {
       tokens.push({ kind: "pt", original: term });
-      return `<pt i="${tokens.length - 1}"></pt>`;
+      return `<x-pt i="${tokens.length - 1}"></x-pt>`;
     });
   }
   return { text: out, tokens };
@@ -201,13 +205,13 @@ function signature(text) {
  */
 function restore(translated, tokens, sourceEnglish) {
   let out = String(translated);
-  // Rosetta may serialise an empty element as <ph i="1"></ph>, <ph i="1"/> or
-  // <ph i="1" /> and may put whitespace inside; accept all of them.
-  out = out.replace(/<(ph|pt)\s+i="(\d+)"\s*(?:\/>|>\s*<\/\1\s*>)/g, (_m, kind, i) => {
+  // Rosetta may serialise an empty element as <x-ph i="1"></x-ph>, <x-ph i="1"/>
+  // or <x-ph i="1" /> and may put whitespace inside; accept all of them.
+  out = out.replace(/<x-(ph|pt)\s+i="(\d+)"\s*(?:\/>|>\s*<\/x-\1\s*>)/g, (_m, kind, i) => {
     const token = tokens[Number(i)];
     return token && token.kind === kind ? token.original : `\u0000${kind}${i}\u0000`;
   });
-  out = out.replace(/<(\/?)c(\d+)>/g, "<$1$2>");
+  out = out.replace(/<(\/?)x-c(\d+)>/g, "<$1$2>");
   // An HTML-aware translator may escape `&`, `<`, `>` and quotes on the way
   // back. Decode the basic entities only when the source had none of them, so
   // a source that legitimately contains `&amp;` is left alone.
@@ -216,7 +220,7 @@ function restore(translated, tokens, sourceEnglish) {
   }
   ENTITY_RE.lastIndex = 0;
 
-  if (/\u0000|<\/?(?:ph|pt|c\d+)\b/.test(out)) {
+  if (/\u0000|<\/?x-(?:ph|pt|c\d+)\b/.test(out)) {
     return { ok: false, text: out, reason: "a protected token was altered or lost" };
   }
   const terms = tokens.filter((t) => t.kind === "pt").map((t) => t.original);
