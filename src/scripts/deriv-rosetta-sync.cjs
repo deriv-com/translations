@@ -142,7 +142,8 @@ const ENTITIES = {
  * out-of-range code point, is returned as is, so the leftover check fails it.
  */
 function decodeEntity(match, name) {
-  if (name[0] !== "#") return ENTITIES[name] ?? match;
+  // Own properties only: `&constructor;` must not reach Object.prototype.
+  if (name[0] !== "#") return Object.hasOwn(ENTITIES, name) ? ENTITIES[name] : match;
   const code = name[1].toLowerCase() === "x" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
   const control = (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || (code >= 0x7f && code <= 0x9f);
   const surrogate = code >= 0xd800 && code <= 0xdfff;
@@ -1048,7 +1049,7 @@ async function main(env = process.env, io = {}) {
   if (cfg.summaryFile) fs.appendFileSync(cfg.summaryFile, `${summary}\n`);
   // Surface problems as workflow annotations, not only in the summary table.
   if (status === "partial") log(`::warning::Rosetta returned a partial result for ${cfg.project}/${cfg.environment}: ${Object.keys(rosettaErrors).join(", ")} — see the job summary`);
-  if (keptBackTotal > 0) log(`::warning::${keptBackTotal} string(s) were kept out of the ${cfg.project}/${cfg.environment} catalogues because a placeholder, marker or protected term did not survive translation — see the job summary`);
+  if (keptBackTotal > 0) log(`::warning::${keptBackTotal} string(s) were kept out of the ${cfg.project}/${cfg.environment} catalogues because a placeholder, marker or protected term did not survive translation, or an HTML entity was left in it — see the job summary`);
   if (overrides && overrides.stale.length) log(`::warning::${overrides.stale.length} override(s) in ${cfg.overridesFile} name English text that is no longer extracted — see the job summary`);
   appendOutput(cfg.outputFile, [
     `status=${status}`,

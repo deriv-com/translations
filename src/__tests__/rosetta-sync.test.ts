@@ -194,6 +194,7 @@ describe("token protection", () => {
 
   it.each([
     ["an unsupported named entity", "10&euro; seulement", "Only 10 euros", "&euro;"],
+    ["an entity named like an Object property", "Ouvrir &constructor; le menu", "Open the menu", "&constructor;"],
     ["a lone surrogate", "Hola &#xD83D;", "Hello", "&#xD83D;"],
     ["a control character", "Hola&#1;", "Hello", "&#1;"],
   ])("holds back a translation with %s the source did not have", (_label, translated, source, entity) => {
