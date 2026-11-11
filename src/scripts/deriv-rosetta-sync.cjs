@@ -127,18 +127,23 @@ function localeFileName(code) {
 // because the same regex builds the signature the token check compares.
 const PLACEHOLDER_RE = /\{\{-?\s*[^{}]+?\s*\}\}|\$t\([^()]*\)/g;
 const MARKER_RE = /<(\/?)(\d+)>/g;
-// Entities restore() decodes, and any entity at all (for the leftover check).
-const ENTITY_RE = /&(amp|lt|gt|quot|apos|nbsp|#\d+|#x[0-9a-fA-F]+);/g;
-const ANY_ENTITY_RE = /&(?:[A-Za-z][A-Za-z0-9]*|#\d+|#x[0-9a-fA-F]+);/g;
-const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
+// Any HTML entity: named, decimal or hex (`&#x…;` or `&#X…;`).
+const ENTITY_RE = /&([A-Za-z][A-Za-z0-9]*|#\d+|#[xX][0-9a-fA-F]+);/g;
+// Named entities restore() decodes: the basic ones plus the typographic ones an
+// HTML serialiser commonly emits. Any other name is left, and held back.
+const ENTITIES = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0",
+  lsquo: "\u2018", rsquo: "\u2019", ldquo: "\u201c", rdquo: "\u201d",
+  laquo: "\u00ab", raquo: "\u00bb", hellip: "\u2026", ndash: "\u2013", mdash: "\u2014",
+};
 /**
- * Decode one entity matched by ENTITY_RE (named, decimal or hex). A numeric
- * entity for a surrogate, a control character (other than tab, LF and CR) or
- * an out-of-range code point is returned as is, so the leftover check fails it.
+ * Decode one entity matched by ENTITY_RE. A name not in ENTITIES, and a numeric
+ * entity for a surrogate, a control character (other than tab, LF and CR) or an
+ * out-of-range code point, is returned as is, so the leftover check fails it.
  */
 function decodeEntity(match, name) {
-  if (name[0] !== "#") return ENTITIES[name];
-  const code = name[1] === "x" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+  if (name[0] !== "#") return ENTITIES[name] ?? match;
+  const code = name[1].toLowerCase() === "x" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
   const control = (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || (code >= 0x7f && code <= 0x9f);
   const surrogate = code >= 0xd800 && code <= 0xdfff;
   return code > 0 && code <= 0x10ffff && !control && !surrogate ? String.fromCodePoint(code) : match;
@@ -246,16 +251,16 @@ function restore(translated, tokens, sourceEnglish) {
   // entity the source itself contains, which is kept as written: a source
   // with `&amp;` keeps its `&amp;`, while a `&amp;` the translator added to a
   // source with only `&nbsp;` is still decoded.
-  const sourceEntities = new Set(String(sourceEnglish).match(ANY_ENTITY_RE) || []);
+  const sourceEntities = new Set(String(sourceEnglish).match(ENTITY_RE) || []);
   out = out.replace(ENTITY_RE, (m, name) => (sourceEntities.has(m) ? m : decodeEntity(m, name)));
 
   // Also catches a token Rosetta returned without its x- prefix.
   if (LEFTOVER_TOKEN_RE.test(out)) {
     return { ok: false, text: out, reason: "a protected token was altered or lost" };
   }
-  // Any other entity the source did not have (`&rsquo;`, a surrogate) would be
+  // Any other entity the source did not have (`&euro;`, a surrogate) would be
   // published literally, so the string is held back instead.
-  const leftover = (out.match(ANY_ENTITY_RE) || []).find((e) => !sourceEntities.has(e));
+  const leftover = (out.match(ENTITY_RE) || []).find((e) => !sourceEntities.has(e));
   if (leftover) {
     return { ok: false, text: out, reason: `an HTML entity was left in the translation (${leftover})` };
   }

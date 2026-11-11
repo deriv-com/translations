@@ -181,21 +181,23 @@ describe("token protection", () => {
     expect(sync.restore('Hola <x-ph i="0"> </x-ph>', tokens, source).ok).toBe(true);
   });
 
-  it("decodes HTML entities the translator added, but only when the source had none", () => {
+  it("decodes entities the translator added, keeping any the source has", () => {
     expect(sync.restore("Pares &amp; opciones &lt;rápido&gt;", [], "Pairs & options <fast>")).toMatchObject({ ok: true, text: "Pares & opciones <rápido>" });
     expect(sync.restore("Les éléments ne sont pas prêts&nbsp;: c&#x27;est &#8216;ok&#8217;", [], "Items aren't ready: it's 'ok'")).toMatchObject({ ok: true, text: "Les éléments ne sont pas prêts\u00a0: c'est \u2018ok\u2019" });
     // An entity the source has is kept; one the translator added is still decoded.
     expect(sync.restore("Frais&nbsp;: bas &amp; rapide", [], "Fees:&nbsp;low & fast")).toMatchObject({ ok: true, text: "Frais&nbsp;: bas & rapide" });
+    // A source that already carries an entity is left exactly as returned.
+    expect(sync.restore("Tom &amp; Jerry", [], "Tom &amp; Jerry")).toMatchObject({ ok: true, text: "Tom &amp; Jerry" });
+    // Uppercase hex and the common typographic names are decoded too.
+    expect(sync.restore("&laquo;&nbsp;Portefeuille&nbsp;&raquo; c&rsquo;est prêt&hellip; c&#X27;est", [], "Wallet: it's ready... it's")).toMatchObject({ ok: true, text: "\u00ab\u00a0Portefeuille\u00a0\u00bb c\u2019est prêt\u2026 c'est" });
   });
 
   it.each([
-    ["an unsupported named entity", "c&rsquo;est prêt", "it's ready", "&rsquo;"],
+    ["an unsupported named entity", "10&euro; seulement", "Only 10 euros", "&euro;"],
     ["a lone surrogate", "Hola &#xD83D;", "Hello", "&#xD83D;"],
     ["a control character", "Hola&#1;", "Hello", "&#1;"],
   ])("holds back a translation with %s the source did not have", (_label, translated, source, entity) => {
     expect(sync.restore(translated, [], source)).toMatchObject({ ok: false, reason: `an HTML entity was left in the translation (${entity})` });
-    // A source that already carries an entity is left exactly as returned.
-    expect(sync.restore("Tom &amp; Jerry", [], "Tom &amp; Jerry")).toMatchObject({ ok: true, text: "Tom &amp; Jerry" });
   });
 
   it("fails closed when a token is lost, duplicated or translated", () => {
