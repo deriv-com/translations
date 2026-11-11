@@ -127,20 +127,40 @@ function localeFileName(code) {
 // because the same regex builds the signature the token check compares.
 const PLACEHOLDER_RE = /\{\{-?\s*[^{}]+?\s*\}\}|\$t\([^()]*\)/g;
 const MARKER_RE = /<(\/?)(\d+)>/g;
+// Entities restore() decodes, and any entity at all (for the leftover check).
 const ENTITY_RE = /&(amp|lt|gt|quot|apos|nbsp|#\d+|#x[0-9a-fA-F]+);/g;
+const ANY_ENTITY_RE = /&(?:[A-Za-z][A-Za-z0-9]*|#\d+|#x[0-9a-fA-F]+);/g;
 const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
-/** Decode one entity matched by ENTITY_RE (named, decimal or hex). */
-function decodeEntity(_m, name) {
+/**
+ * Decode one entity matched by ENTITY_RE (named, decimal or hex). A numeric
+ * entity for a surrogate, a control character (other than tab, LF and CR) or
+ * an out-of-range code point is returned as is, so the leftover check fails it.
+ */
+function decodeEntity(match, name) {
   if (name[0] !== "#") return ENTITIES[name];
   const code = name[1] === "x" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
-  return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : _m;
+  const control = (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || (code >= 0x7f && code <= 0x9f);
+  const surrogate = code >= 0xd800 && code <= 0xdfff;
+  return code > 0 && code <= 0x10ffff && !control && !surrogate ? String.fromCodePoint(code) : match;
 }
-// Protection tags are custom elements (a hyphen in the name): see protect().
-const TAG = { ph: "x-ph", pt: "x-pt", marker: "x-c" };
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+// Protection tags are custom elements (a hyphen in the name): see protect().
+// restore()'s regexes are built from the same table, so a rename stays in one place.
+const TAG = { ph: "x-ph", pt: "x-pt", marker: "x-c" };
+const KIND_BY_TAG = { [TAG.ph]: "ph", [TAG.pt]: "pt" };
+const TOKEN_TAG_RE = new RegExp(
+  `<(${escapeRegExp(TAG.ph)}|${escapeRegExp(TAG.pt)})\\s+i="(\\d+)"\\s*(?:\\/>|>\\s*<\\/\\1\\s*>)`,
+  "g"
+);
+const MARKER_TAG_RE = new RegExp(`<(\\/?)${escapeRegExp(TAG.marker)}(\\d+)>`, "g");
+// A token that survived restore, in its tag form or without its prefix.
+const LEFTOVER_TOKEN_RE = new RegExp(
+  `\\u0000|<\\/?(?:${escapeRegExp(TAG.ph)}|${escapeRegExp(TAG.pt)}|${escapeRegExp(TAG.marker)}\\d+|ph|pt|c\\d+)\\b`
+);
 
 /** Whole-term match: not glued to a letter or digit on either side. */
 function termRegExp(term) {
@@ -215,22 +235,29 @@ function restore(translated, tokens, sourceEnglish) {
   let out = String(translated);
   // Rosetta may serialise an empty element as <x-ph i="1"></x-ph>, <x-ph i="1"/>
   // or <x-ph i="1" /> and may put whitespace inside; accept all of them.
-  out = out.replace(/<x-(ph|pt)\s+i="(\d+)"\s*(?:\/>|>\s*<\/x-\1\s*>)/g, (_m, kind, i) => {
+  out = out.replace(TOKEN_TAG_RE, (_m, tag, i) => {
+    const kind = KIND_BY_TAG[tag];
     const token = tokens[Number(i)];
     return token && token.kind === kind ? token.original : `\u0000${kind}${i}\u0000`;
   });
-  out = out.replace(/<(\/?)x-c(\d+)>/g, "<$1$2>");
-  // An HTML-aware translator may escape `&`, `<`, `>` and quotes on the way
-  // back. Decode the basic entities only when the source had none of them, so
-  // a source that legitimately contains `&amp;` is left alone.
-  if (!ENTITY_RE.test(sourceEnglish)) {
-    out = out.replace(ENTITY_RE, decodeEntity);
-  }
-  ENTITY_RE.lastIndex = 0;
+  out = out.replace(MARKER_TAG_RE, "<$1$2>");
+  // An HTML-aware translator may escape `&`, `<`, `>`, quotes and non-breaking
+  // spaces, or emit numeric entities, on the way back. Decode those, except an
+  // entity the source itself contains, which is kept as written: a source
+  // with `&amp;` keeps its `&amp;`, while a `&amp;` the translator added to a
+  // source with only `&nbsp;` is still decoded.
+  const sourceEntities = new Set(String(sourceEnglish).match(ANY_ENTITY_RE) || []);
+  out = out.replace(ENTITY_RE, (m, name) => (sourceEntities.has(m) ? m : decodeEntity(m, name)));
 
   // Also catches a token Rosetta returned without its x- prefix.
-  if (/\u0000|<\/?(?:x-)?(?:ph|pt|c\d+)\b/.test(out)) {
+  if (LEFTOVER_TOKEN_RE.test(out)) {
     return { ok: false, text: out, reason: "a protected token was altered or lost" };
+  }
+  // Any other entity the source did not have (`&rsquo;`, a surrogate) would be
+  // published literally, so the string is held back instead.
+  const leftover = (out.match(ANY_ENTITY_RE) || []).find((e) => !sourceEntities.has(e));
+  if (leftover) {
+    return { ok: false, text: out, reason: `an HTML entity was left in the translation (${leftover})` };
   }
   const terms = tokens.filter((t) => t.kind === "pt").map((t) => t.original);
   const check = checkTranslation(out, sourceEnglish, terms);
